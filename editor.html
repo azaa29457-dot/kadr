@@ -202,8 +202,13 @@
             </div>
 
             <div class="ai-section" id="ai-erase">
-              <p class="hint">Закрасьте кистью то, что нужно убрать, и нажмите «Стереть». ИИ сам дорисует то, что было за предметом.</p>
-              <div class="field">
+              <div class="segmented" id="erase-mode" role="radiogroup" aria-label="Как выделить предмет">
+                <button type="button" role="radio" data-erase="tap" aria-checked="true">Нажатием</button>
+                <button type="button" role="radio" data-erase="brush" aria-checked="false">Кистью</button>
+              </div>
+              <p class="hint" id="erase-hint-tap">Нажмите на предмет, который нужно убрать, и ИИ сам его выделит. Можно выбрать несколько предметов, а затем нажать «Стереть».</p>
+              <p class="hint" id="erase-hint-brush" hidden>Закрасьте кистью то, что нужно убрать, и нажмите «Стереть». ИИ сам дорисует то, что было за предметом.</p>
+              <div class="field" id="erase-size-field" hidden>
                 <div class="field-head">
                   <label for="erase-size">Размер кисти</label>
                   <output id="erase-size-value" for="erase-size">35</output>
@@ -255,7 +260,7 @@
               <div class="progress"><span id="ai-progress"></span></div>
             </div>
 
-            <p class="hint ai-note">При первом запуске браузер один раз скачает ИИ-модель (около 30–45 МБ). Само фото при этом не покидает ваше устройство.</p>
+            <p class="hint ai-note">При первом запуске браузер один раз скачает ИИ-модели (от 15 до 45 МБ). Само фото при этом не покидает ваше устройство.</p>
           </section>
 
           <!-- Текст -->
@@ -394,6 +399,28 @@
         <div class="dialog-head">
           <h2 id="save-title">Сохранить фото</h2>
           <button class="tool-btn" type="button" id="btn-save-close" aria-label="Закрыть"><svg class="icon"><use href="#i-close"/></svg></button>
+        </div>
+
+        <div class="field">
+          <span class="field-label" id="size-label">Размер</span>
+          <div class="chips chips-wrap" id="sizes" role="radiogroup" aria-labelledby="size-label">
+            <button class="chip" type="button" role="radio" data-size="original" aria-checked="true">Исходный</button>
+            <button class="chip" type="button" role="radio" data-size="4k" aria-checked="false">4K</button>
+            <button class="chip" type="button" role="radio" data-size="2k" aria-checked="false">2K</button>
+            <button class="chip" type="button" role="radio" data-size="1080" aria-checked="false">1080p</button>
+            <button class="chip" type="button" role="radio" data-size="720" aria-checked="false">720p</button>
+            <button class="chip" type="button" role="radio" data-size="480" aria-checked="false">480p</button>
+          </div>
+          <label class="toggle" id="ai-detail-field" hidden>
+            <input type="checkbox" id="ai-detail" checked>
+            <span>ИИ-детализация</span>
+          </label>
+          <p class="hint" id="size-hint" hidden></p>
+        </div>
+
+        <div class="ai-status" id="save-status" hidden>
+          <p class="ai-status-text">Готовим…</p>
+          <div class="progress"><span></span></div>
         </div>
 
         <div class="field">

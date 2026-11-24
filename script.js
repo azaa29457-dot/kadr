@@ -25,18 +25,23 @@
   const HISTORY_LIMIT = 60;           // сколько шагов можно отменить
 
   const ORT_VERSION = '1.31.1';
-  const ORT_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+  const ORT_BASE = window.KADR_ORT_BASE || `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+  const HF = 'https://huggingface.co/';
   const MODELS = {
+    // ИИ-ластик: LaMa (Samsung AI Center), лицензия Apache 2.0
     eraser: {
-      // MI-GAN, Picsart AI Research, лицензия MIT
-      url: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx',
-      sizeMb: 28,
+      url: HF + 'othytenk/lama-int4-int8/resolve/main/lama_int4_int8_r4.onnx',
+      sizeMb: 37,
+      gpu: true,
+      options: { extra: { session: { disable_quant_qdq: '1' } } },
     },
-    background: {
-      // ORMBG, лицензия Apache 2.0
-      url: 'https://huggingface.co/onnx-community/ormbg-ONNX/resolve/main/onnx/model_quantized.onnx',
-      sizeMb: 44,
-    },
+    // Умное выделение: SlimSAM (Segment Anything), лицензия Apache 2.0
+    samEncoder: { url: HF + 'Xenova/slimsam-77-uniform/resolve/main/onnx/vision_encoder_quantized.onnx', sizeMb: 9 },
+    samDecoder: { url: HF + 'Xenova/slimsam-77-uniform/resolve/main/onnx/prompt_encoder_mask_decoder_quantized.onnx', sizeMb: 5 },
+    // Удаление фона: ORMBG, лицензия Apache 2.0
+    background: { url: HF + 'onnx-community/ormbg-ONNX/resolve/main/onnx/model_quantized.onnx', sizeMb: 44 },
+    // Увеличение разрешения: Real-ESRGAN, лицензия BSD-3-Clause
+    upscale: { url: HF + 'thisismert/real-esrgan-onnx/resolve/main/onnx/realesr-general-x4v3.onnx', sizeMb: 5, gpu: true },
   };
 
   const ADJUST_GROUPS = [
@@ -182,6 +187,10 @@
     aiMode: $$('#ai-mode button'),
     aiErase: $('#ai-erase'),
     aiBg: $('#ai-bg'),
+    eraseModeBtns: $$('#erase-mode button'),
+    eraseHintTap: $('#erase-hint-tap'),
+    eraseHintBrush: $('#erase-hint-brush'),
+    eraseSizeField: $('#erase-size-field'),
     eraseSize: $('#erase-size'),
     eraseSizeValue: $('#erase-size-value'),
     btnEraseClear: $('#btn-erase-clear'),
@@ -230,6 +239,11 @@
     frameRadiusValue: $('#frame-radius-value'),
     saveDialog: $('#save-dialog'),
     btnSaveClose: $('#btn-save-close'),
+    sizes: $$('#sizes .chip'),
+    aiDetailField: $('#ai-detail-field'),
+    aiDetail: $('#ai-detail'),
+    sizeHint: $('#size-hint'),
+    saveStatus: $('#save-status'),
     format: $$('#format button'),
     formatHint: $('#format-hint'),
     qualityField: $('#quality-field'),
@@ -291,6 +305,8 @@
   let cropRatio = 'free';
 
   let eraseStrokes = [];      // то, что закрашено для ИИ-ластика
+  let eraseMode = 'tap';      // 'tap' — выделить нажатием, 'brush' — закрасить кистью
+  let imageId = 0;
   let liveStroke = null;      // линия, которую сейчас рисуют
   let brushHover = null;
   let drawColor = '#ff4d4d';
@@ -544,7 +560,7 @@
       const wctx = workSource.getContext('2d');
       wctx.drawImage(original, 0, 0);
       for (let i = 0; i < n && i < patchList.length; i++) {
-        wctx.drawImage(patchList[i].canvas, patchList[i].x, patchList[i].y);
+        for (const part of patchList[i].parts) wctx.drawImage(part.canvas, part.x, part.y);
       }
     }
     appliedPatches = n;
@@ -592,6 +608,8 @@
     pendingCrop = null;
     cropRatio = 'free';
     eraseStrokes = [];
+    selCanvas = null;
+    imageId++;
     liveStroke = null;
     el.cropUI.hidden = true;
     dirtyBase = true;
@@ -1429,6 +1447,10 @@
     el.bgBlurValue.textContent = state.bg.blur;
     setFill(el.bgBlur);
     if (el.bgSwatches._sync) el.bgSwatches._sync(state.bg.color);
+    setRadio(el.eraseModeBtns, 'erase', eraseMode);
+    el.eraseHintTap.hidden = eraseMode !== 'tap';
+    el.eraseHintBrush.hidden = eraseMode !== 'brush';
+    el.eraseSizeField.hidden = eraseMode !== 'brush';
     el.btnEraseRun.disabled = aiBusy;
     el.btnBgRun.disabled = aiBusy;
     el.eraseSizeValue.textContent = el.eraseSize.value;
@@ -1878,6 +1900,11 @@
     if (!original || mode === 'crop' || comparing || aiBusy) return;
     const p = canvasPoint(e);
 
+    if (isErasing() && eraseMode === 'tap') {
+      e.preventDefault();
+      pointer = { type: 'tap', x: p.x, y: p.y, cx: e.clientX, cy: e.clientY };
+      return;
+    }
     if (isErasing()) {
       e.preventDefault();
       const s = { r: eraseRadius(), points: [[p.x, p.y]] };
@@ -1945,7 +1972,7 @@
       return;
     }
 
-    if (e.pointerType === 'mouse' && (activeTab === 'draw' || isErasing())) {
+    if (e.pointerType === 'mouse' && (activeTab === 'draw' || (isErasing() && eraseMode === 'brush'))) {
       brushHover = p;
       requestRender();
     } else if (e.pointerType === 'mouse') {
@@ -1954,6 +1981,13 @@
   }
 
   function onCanvasPointerUp(e) {
+    if (pointer && pointer.type === 'tap') {
+      const moved = e ? Math.hypot(e.clientX - pointer.cx, e.clientY - pointer.cy) : 0;
+      const pt = pointer;
+      pointer = null;
+      if (moved < 10 && e && e.type === 'pointerup') selectAt(pt.x, pt.y);
+      return;
+    }
     if (e && e.pointerType !== 'mouse' && brushHover) {
       brushHover = null;
       requestRender();
@@ -1970,19 +2004,23 @@
   }
 
   function drawEraseOverlay() {
-    if (!eraseStrokes.length && !brushHover) return;
     const w = el.canvas.width;
     const h = el.canvas.height;
-    if (eraseStrokes.length) {
+    if (selCanvas && selCanvas._key !== samKey()) selCanvas = null;
+    if (selCanvas || eraseStrokes.length) {
       const layer = makeCanvas(w, h);
       const lctx = layer.getContext('2d');
-      paintEraseStrokes(lctx, '#ff3b3b');
+      if (selCanvas) lctx.drawImage(selCanvas, 0, 0, w, h);
+      paintEraseStrokes(lctx, '#fff');
+      lctx.globalCompositeOperation = 'source-in';
+      lctx.fillStyle = '#ff3b3b';
+      lctx.fillRect(0, 0, w, h);
       ctx.save();
       ctx.globalAlpha = 0.5;
       ctx.drawImage(layer, 0, 0);
       ctx.restore();
     }
-    if (brushHover) drawBrushCursor(brushHover.x, brushHover.y, eraseRadius());
+    if (brushHover && eraseMode === 'brush') drawBrushCursor(brushHover.x, brushHover.y, eraseRadius());
   }
 
   function paintEraseStrokes(context, color) {
@@ -2007,29 +2045,100 @@
     context.restore();
   }
 
-  /* ---------- ИИ: загрузка модели ---------- */
+  /* ---------- ИИ: фоновый поток и модели ---------- */
+  // Все нейросети работают в отдельном потоке (Web Worker), чтобы страница не зависала.
+  // Если у устройства есть WebGPU, тяжёлые модели считаются на видеокарте — в разы быстрее.
 
-  let ortPromise = null;
-  const sessions = {};
+  const WORKER_SRC = `
+    let rt = null;
+    let gpu = false;
+    const sessions = {};
+    async function init(base) {
+      if (rt) return gpu;
+      try {
+        if (self.navigator && navigator.gpu) gpu = !!(await navigator.gpu.requestAdapter());
+      } catch (e) { gpu = false; }
+      importScripts(base + (gpu ? 'ort.webgpu.min.js' : 'ort.wasm.min.js'));
+      rt = self.ort;
+      rt.env.wasm.wasmPaths = base;
+      rt.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+      return gpu;
+    }
+    async function create(buffer, eps, options) {
+      return rt.InferenceSession.create(new Uint8Array(buffer), Object.assign({ executionProviders: eps }, options || {}));
+    }
+    self.onmessage = async (e) => {
+      const msg = e.data;
+      try {
+        if (msg.type === 'init') {
+          postMessage({ id: msg.id, ok: true, gpu: await init(msg.base) });
+        } else if (msg.type === 'load') {
+          const eps = msg.useGpu && gpu ? ['webgpu', 'wasm'] : ['wasm'];
+          try {
+            sessions[msg.key] = await create(msg.buffer, eps, msg.options);
+          } catch (err) {
+            if (eps[0] !== 'webgpu') throw err;
+            sessions[msg.key] = await create(msg.buffer, ['wasm'], msg.options);
+          }
+          postMessage({ id: msg.id, ok: true });
+        } else if (msg.type === 'run') {
+          const s = sessions[msg.key];
+          const feeds = {};
+          for (const name in msg.feeds) {
+            const t = msg.feeds[name];
+            feeds[name] = new rt.Tensor(t.type, t.data, t.dims);
+          }
+          const out = await s.run(feeds);
+          const res = {};
+          const transfer = [];
+          for (const name of s.outputNames) {
+            const t = out[name];
+            res[name] = { data: t.data, dims: t.dims, type: t.type };
+            transfer.push(t.data.buffer);
+          }
+          postMessage({ id: msg.id, ok: true, outputs: res }, transfer);
+        }
+      } catch (err) {
+        postMessage({ id: msg.id, ok: false, error: String((err && err.message) || err) });
+      }
+    };
+  `;
 
-  function loadOrt() {
-    if (ortPromise) return ortPromise;
-    ortPromise = new Promise((resolve, reject) => {
-      if (window.ort) { resolve(window.ort); return; }
-      const s = document.createElement('script');
-      s.src = ORT_BASE + 'ort.wasm.min.js';
-      s.crossOrigin = 'anonymous';
-      s.onload = () => {
-        const ort = window.ort;
-        ort.env.wasm.wasmPaths = ORT_BASE;
-        ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-        ort.env.wasm.proxy = true; // считаем в фоне, чтобы страница не зависала
-        resolve(ort);
-      };
-      s.onerror = () => { ortPromise = null; reject(new Error('ort')); };
-      document.head.append(s);
+  let worker = null;
+  let workerReady = null;
+  let hasGpu = false;
+  let msgId = 0;
+  const pending = new Map();
+  const loadedModels = new Set();
+  const loadingModels = new Map();
+
+  function callWorker(type, payload, transfer = []) {
+    return new Promise((resolve, reject) => {
+      const id = ++msgId;
+      pending.set(id, { resolve, reject });
+      worker.postMessage(Object.assign({ id, type }, payload), transfer);
     });
-    return ortPromise;
+  }
+
+  function ensureWorker() {
+    if (workerReady) return workerReady;
+    const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+    worker = new Worker(url);
+    worker.onmessage = (e) => {
+      const p = pending.get(e.data.id);
+      if (!p) return;
+      pending.delete(e.data.id);
+      if (e.data.ok) p.resolve(e.data);
+      else p.reject(new Error(e.data.error));
+    };
+    worker.onerror = (e) => {
+      for (const p of pending.values()) p.reject(new Error('ort ' + (e.message || 'worker')));
+      pending.clear();
+      workerReady = null;
+    };
+    workerReady = callWorker('init', { base: ORT_BASE }).then((r) => { hasGpu = r.gpu; });
+    workerReady.catch(() => { workerReady = null; });
+    return workerReady;
   }
 
   async function fetchModel(url, sizeMb, onProgress) {
@@ -2070,36 +2179,48 @@
     return buf;
   }
 
-  async function getSession(key) {
-    if (sessions[key]) return sessions[key];
-    const info = MODELS[key];
-    setAIStatus('Загружаем ИИ…', null);
-    const ort = await loadOrt();
-    const buf = await fetchModel(info.url, info.sizeMb, (f) => {
-      setAIStatus(`Загружаем ИИ-модель: ${Math.round(f * 100)} %`, f);
-    });
-    setAIStatus('Готовим ИИ к работе…', null);
-    try {
-      sessions[key] = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'] });
-    } catch (e) {
-      // Если фоновый режим не сработал, пробуем обычный
-      if (ort.env.wasm.proxy) {
-        ort.env.wasm.proxy = false;
-        sessions[key] = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'] });
-      } else {
-        throw e;
-      }
+  // Загружает модели по очереди и показывает прогресс
+  async function loadModels(keys, statusEl) {
+    await ensureWorker();
+    const need = keys.filter((k) => !loadedModels.has(k));
+    const totalMb = need.reduce((s, k) => s + MODELS[k].sizeMb, 0);
+    let doneMb = 0;
+    for (const key of need) {
+      if (loadingModels.has(key)) { await loadingModels.get(key); continue; }
+      const info = MODELS[key];
+      const job = (async () => {
+        const buf = await fetchModel(info.url, info.sizeMb, (f) => {
+          const frac = (doneMb + f * info.sizeMb) / totalMb;
+          setStatus(statusEl, `Загружаем ИИ-модель: ${Math.round(frac * 100)} %`, frac);
+        });
+        setStatus(statusEl, 'Готовим ИИ к работе…', null);
+        await callWorker('load', { key, buffer: buf, useGpu: !!info.gpu, options: info.options }, [buf]);
+        loadedModels.add(key);
+      })();
+      loadingModels.set(key, job);
+      try { await job; } finally { loadingModels.delete(key); }
+      doneMb += info.sizeMb;
     }
-    return sessions[key];
+  }
+
+  async function runModel(key, feeds) {
+    const transfer = Object.values(feeds).map((t) => t.data.buffer);
+    const r = await callWorker('run', { key, feeds }, transfer);
+    return r.outputs;
+  }
+
+  function setStatus(box, text, fraction) {
+    const target = box || el.aiStatus;
+    target.hidden = !text;
+    if (!text) return;
+    target.querySelector('.ai-status-text').textContent = text;
+    const bar = target.querySelector('.progress');
+    bar.classList.toggle('is-indeterminate', fraction == null);
+    bar.firstElementChild.style.width = fraction == null ? '' : Math.round(fraction * 100) + '%';
   }
 
   function setAIStatus(text, fraction) {
-    el.aiStatus.hidden = !text;
-    if (!text) return;
-    el.aiStatusText.textContent = text;
-    const bar = el.aiProgress.parentElement;
-    bar.classList.toggle('is-indeterminate', fraction == null);
-    el.aiProgress.style.width = fraction == null ? '' : Math.round(fraction * 100) + '%';
+    setStatus(el.aiStatus, text, fraction);
   }
 
   function setBusy(busy, label) {
@@ -2114,131 +2235,724 @@
 
   function aiError(e) {
     console.error(e);
-    const msg = String(e && e.message || e);
-    if (/ort|fetch|model|network|Failed/i.test(msg)) {
-      toast('Не получилось загрузить ИИ-модель. Проверьте интернет и попробуйте ещё раз.', true);
-    } else if (/memory|allocation|RangeError/i.test(msg)) {
+    const msg = String((e && e.message) || e);
+    if (/memory|allocation|RangeError|OOM/i.test(msg)) {
       toast('Не хватило памяти устройства. Попробуйте фото поменьше.', true);
+    } else if (/ort|fetch|model|network|Failed|load|import/i.test(msg)) {
+      toast('Не получилось загрузить ИИ-модель. Проверьте интернет и попробуйте ещё раз.', true);
     } else {
       toast('ИИ не справился с этим фото. Попробуйте ещё раз.', true);
     }
   }
 
-  /* ---------- ИИ-ластик ---------- */
+  /* ---------- Работа с масками ---------- */
+
+  // Расширяет маску на r пикселей (чтобы захватить края и тень предмета)
+  function dilateMask(mask, w, h, r) {
+    if (r < 1) return mask;
+    const tmp = new Uint8Array(w * h);
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      let last = -Infinity;
+      for (let x = 0; x < w; x++) {
+        if (mask[row + x]) last = x;
+        if (x - last <= r) tmp[row + x] = 1;
+      }
+      last = Infinity;
+      for (let x = w - 1; x >= 0; x--) {
+        if (mask[row + x]) last = x;
+        if (last - x <= r) tmp[row + x] = 1;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      let last = -Infinity;
+      for (let y = 0; y < h; y++) {
+        if (tmp[y * w + x]) last = y;
+        if (y - last <= r) out[y * w + x] = 1;
+      }
+      last = Infinity;
+      for (let y = h - 1; y >= 0; y--) {
+        if (tmp[y * w + x]) last = y;
+        if (last - y <= r) out[y * w + x] = 1;
+      }
+    }
+    return out;
+  }
+
+  // Оставляет только ту часть маски, которая связана с точкой нажатия
+  function keepComponent(mask, w, h, px, py) {
+    let start = py * w + px;
+    if (!mask[start]) {
+      let best = -1;
+      let bestD = Infinity;
+      const R = Math.round(Math.min(w, h) * 0.05);
+      for (let y = Math.max(0, py - R); y < Math.min(h, py + R); y++) {
+        for (let x = Math.max(0, px - R); x < Math.min(w, px + R); x++) {
+          const d = (x - px) * (x - px) + (y - py) * (y - py);
+          if (mask[y * w + x] && d < bestD) { bestD = d; best = y * w + x; }
+        }
+      }
+      if (best < 0) return null;
+      start = best;
+    }
+    const out = new Uint8Array(w * h);
+    const stack = new Int32Array(w * h);
+    let sp = 0;
+    stack[sp++] = start;
+    out[start] = 1;
+    while (sp) {
+      const i = stack[--sp];
+      const x = i % w;
+      if (x > 0 && mask[i - 1] && !out[i - 1]) { out[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < w - 1 && mask[i + 1] && !out[i + 1]) { out[i + 1] = 1; stack[sp++] = i + 1; }
+      if (i >= w && mask[i - w] && !out[i - w]) { out[i - w] = 1; stack[sp++] = i - w; }
+      if (i < w * (h - 1) && mask[i + w] && !out[i + w]) { out[i + w] = 1; stack[sp++] = i + w; }
+    }
+    return out;
+  }
+
+  function maskToCanvas(mask, w, h) {
+    const c = makeCanvas(w, h);
+    const img = new ImageData(w, h);
+    for (let i = 0, p = 0; i < w * h; i++, p += 4) {
+      img.data[p] = 255;
+      img.data[p + 1] = 255;
+      img.data[p + 2] = 255;
+      img.data[p + 3] = mask[i] ? 255 : 0;
+    }
+    c.getContext('2d').putImageData(img, 0, 0);
+    return c;
+  }
+
+  /* ---------- ИИ: умное выделение (SlimSAM) ---------- */
+
+  let selCanvas = null;   // выделенные предметы (в координатах экрана)
+  let samCache = null;    // «понимание» фото нейросетью, считается один раз
+
+  function samKey() {
+    return JSON.stringify([imageId, state.patches, state.m, state.angle, state.crop, preview.width]);
+  }
+
+  async function ensureSamEmbedding() {
+    const key = samKey();
+    if (samCache && samCache.key === key) return samCache;
+    await loadModels(['samEncoder', 'samDecoder']);
+    setAIStatus('ИИ изучает фото… Это нужно сделать один раз.', null);
+    ensureBase();
+    const w = baseCanvas.width;
+    const h = baseCanvas.height;
+    const s = 1024 / Math.max(w, h);
+    const rw = Math.round(w * s);
+    const rh = Math.round(h * s);
+    const c = makeCanvas(rw, rh);
+    const cctx = c.getContext('2d', { willReadFrequently: true });
+    cctx.imageSmoothingQuality = 'high';
+    cctx.drawImage(baseCanvas, 0, 0, rw, rh);
+    const d = cctx.getImageData(0, 0, rw, rh).data;
+    const N = 1024 * 1024;
+    const input = new Float32Array(3 * N);
+    const mean = [0.485, 0.456, 0.406];
+    const std = [0.229, 0.224, 0.225];
+    for (let y = 0; y < rh; y++) {
+      for (let x = 0; x < rw; x++) {
+        const p = (y * rw + x) * 4;
+        const i = y * 1024 + x;
+        input[i] = (d[p] / 255 - mean[0]) / std[0];
+        input[i + N] = (d[p + 1] / 255 - mean[1]) / std[1];
+        input[i + 2 * N] = (d[p + 2] / 255 - mean[2]) / std[2];
+      }
+    }
+    const out = await runModel('samEncoder', { pixel_values: { type: 'float32', data: input, dims: [1, 3, 1024, 1024] } });
+    samCache = {
+      key, s, rw, rh, w, h,
+      emb: out.image_embeddings,
+      pos: out.image_positional_embeddings,
+    };
+    return samCache;
+  }
+
+  async function selectAt(px, py) {
+    if (aiBusy) return;
+    setBusy(true, 'ИИ выделяет предмет…');
+    try {
+      const sam = await ensureSamEmbedding();
+      setAIStatus('ИИ выделяет предмет…', null);
+      const out = await runModel('samDecoder', {
+        input_points: { type: 'float32', data: new Float32Array([px * sam.s, py * sam.s]), dims: [1, 1, 1, 2] },
+        input_labels: { type: 'int64', data: new BigInt64Array([1n]), dims: [1, 1, 1] },
+        image_embeddings: { type: 'float32', data: sam.emb.data.slice(), dims: sam.emb.dims },
+        image_positional_embeddings: { type: 'float32', data: sam.pos.data.slice(), dims: sam.pos.dims },
+      });
+      const iou = out.iou_scores.data;
+      let best = 0;
+      for (let i = 1; i < 3; i++) if (iou[i] > iou[best]) best = i;
+      const lm = out.pred_masks.data.subarray(best * 65536, (best + 1) * 65536);
+
+      // Маска 256×256 → размер экрана
+      const m256 = new ImageData(256, 256);
+      for (let i = 0; i < 65536; i++) m256.data[i * 4 + 3] = lm[i] > 0 ? 255 : 0;
+      const c256 = makeCanvas(256, 256);
+      c256.getContext('2d').putImageData(m256, 0, 0);
+      const c1024 = makeCanvas(1024, 1024);
+      const c1ctx = c1024.getContext('2d');
+      c1ctx.imageSmoothingQuality = 'high';
+      c1ctx.drawImage(c256, 0, 0, 1024, 1024);
+      const w = sam.w;
+      const h = sam.h;
+      const full = makeCanvas(w, h);
+      const fctx = full.getContext('2d', { willReadFrequently: true });
+      fctx.drawImage(c1024, 0, 0, sam.rw, sam.rh, 0, 0, w, h);
+      const fd = fctx.getImageData(0, 0, w, h).data;
+      const bin = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) bin[i] = fd[i * 4 + 3] > 127 ? 1 : 0;
+      const part = keepComponent(bin, w, h, clamp(Math.round(px), 0, w - 1), clamp(Math.round(py), 0, h - 1));
+      if (!part) {
+        toast('Здесь ИИ ничего не нашёл. Нажмите точнее на предмет или закрасьте его кистью.');
+        return;
+      }
+      if (!selCanvas || selCanvas.width !== w || selCanvas.height !== h || selCanvas._key !== samKey()) selCanvas = makeCanvas(w, h);
+      selCanvas.getContext('2d').drawImage(maskToCanvas(part, w, h), 0, 0);
+      selCanvas._key = samKey();
+      requestRender();
+    } catch (e) {
+      aiError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function clearSelection() {
+    selCanvas = null;
+    eraseStrokes = [];
+    requestRender();
+  }
+
+  /* ---------- ИИ-ластик (LaMa) ---------- */
+
+  // Восстанавливает мелкую текстуру в стёртом месте, беря её из похожих соседних участков
+  function restoreDetail(data, w, h, hole, k) {
+    const B = 16;
+    const STEP = 8;
+    const N = 90;
+    const L = new Uint8ClampedArray(data);
+    blurArray(L, w, h, 0.7 * k);
+    const G = new Float32Array(w * h);
+    for (let i = 0, p = 0; i < w * h; i++, p += 4) G[i] = 0.299 * L[p] + 0.587 * L[p + 1] + 0.114 * L[p + 2];
+
+    const bad = dilateMask(hole, w, h, 3);
+    const W1 = w + 1;
+    const IB = new Int32Array(W1 * (h + 1));
+    const IH = new Int32Array(W1 * (h + 1));
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      let rb = 0;
+      let rh = 0;
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        rb += bad[i];
+        rh += hole[i];
+        if (hole[i]) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        IB[(y + 1) * W1 + x + 1] = IB[y * W1 + x + 1] + rb;
+        IH[(y + 1) * W1 + x + 1] = IH[y * W1 + x + 1] + rh;
+      }
+    }
+    if (maxX < 0) return;
+    const boxSum = (I, x, y) => I[(y + B) * W1 + x + B] - I[y * W1 + x + B] - I[(y + B) * W1 + x] + I[y * W1 + x];
+
+    const win = new Float32Array(B * B);
+    for (let j = 0; j < B; j++) {
+      for (let i = 0; i < B; i++) {
+        // Острое окно: в каждой точке почти целиком берётся один кусочек, без усреднения
+        win[j * B + i] = Math.pow(Math.sin((Math.PI * (j + 1)) / (B + 1)) * Math.sin((Math.PI * (i + 1)) / (B + 1)), 6) + 1e-4;
+      }
+    }
+    const acc = new Float32Array(w * h * 3);
+    const wac = new Float32Array(w * h);
+    let seed = 1234567;
+    const rnd = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+
+    const bx0 = Math.max(0, minX - B + 1);
+    const by0 = Math.max(0, minY - B + 1);
+    const bx1 = Math.min(w - B, maxX);
+    const by1 = Math.min(h - B, maxY);
+    const nbx = Math.floor((bx1 - bx0) / STEP) + 1;
+    const nby = Math.floor((by1 - by0) / STEP) + 1;
+    const chosen = new Int32Array(nbx * nby * 2).fill(-1);
+
+    const tryCand = (cx, cy, tx, ty, bestScore) => {
+      if (cx < 0 || cy < 0 || cx > w - B || cy > h - B) return Infinity;
+      if (boxSum(IB, cx, cy) !== 0) return Infinity;
+      let s = 0;
+      for (let j = 0; j < B; j += 2) {
+        const r1 = (cy + j) * w + cx;
+        const r2 = (ty + j) * w + tx;
+        for (let i = 0; i < B; i += 2) {
+          const d = G[r1 + i] - G[r2 + i];
+          s += d * d;
+        }
+        if (s >= bestScore) return Infinity;
+      }
+      return s;
+    };
+
+    for (let iy = 0; iy < nby; iy++) {
+      for (let ix = 0; ix < nbx; ix++) {
+        const tx = bx0 + ix * STEP;
+        const ty = by0 + iy * STEP;
+        if (boxSum(IH, tx, ty) === 0) continue;
+        let bx = -1;
+        let byy = -1;
+        let best = Infinity;
+        const consider = (cx, cy) => {
+          const s = tryCand(cx, cy, tx, ty, best);
+          if (s < best) { best = s; bx = cx; byy = cy; }
+        };
+        if (ix > 0 && chosen[(iy * nbx + ix - 1) * 2] >= 0) consider(chosen[(iy * nbx + ix - 1) * 2] + STEP, chosen[(iy * nbx + ix - 1) * 2 + 1]);
+        if (iy > 0 && chosen[((iy - 1) * nbx + ix) * 2] >= 0) consider(chosen[((iy - 1) * nbx + ix) * 2], chosen[((iy - 1) * nbx + ix) * 2 + 1] + STEP);
+        for (let n = 0; n < N; n++) consider((rnd() * (w - B + 1)) | 0, (rnd() * (h - B + 1)) | 0);
+        if (bx < 0) continue;
+        chosen[(iy * nbx + ix) * 2] = bx;
+        chosen[(iy * nbx + ix) * 2 + 1] = byy;
+        for (let j = 0; j < B; j++) {
+          for (let i = 0; i < B; i++) {
+            const p = (ty + j) * w + tx + i;
+            if (!hole[p]) continue;
+            const q = ((byy + j) * w + bx + i) * 4;
+            const wv = win[j * B + i];
+            acc[p * 3] += (data[q] - L[q]) * wv;
+            acc[p * 3 + 1] += (data[q + 1] - L[q + 1]) * wv;
+            acc[p * 3 + 2] += (data[q + 2] - L[q + 2]) * wv;
+            wac[p] += wv;
+          }
+        }
+      }
+    }
+    for (let p = 0; p < w * h; p++) {
+      if (!hole[p] || wac[p] < 1e-3) continue;
+      const q = p * 4;
+      const inv = 1 / wac[p];
+      data[q] = L[q] + acc[p * 3] * inv;
+      data[q + 1] = L[q + 1] + acc[p * 3 + 1] * inv;
+      data[q + 2] = L[q + 2] + acc[p * 3 + 2] * inv;
+    }
+  }
+
+  // Всё, что выделено нажатием и закрашено кистью, — в одной маске (координаты экрана)
+  function buildEraseMask() {
+    const w = baseCanvas.width;
+    const h = baseCanvas.height;
+    const c = makeCanvas(w, h);
+    const cctx = c.getContext('2d');
+    if (selCanvas) cctx.drawImage(selCanvas, 0, 0, w, h);
+    paintEraseStrokes(cctx, '#fff');
+    return c;
+  }
+
+  // Делит выделение на группы: далёкие друг от друга предметы стираются по отдельности,
+  // чтобы каждый обрабатывался в полном разрешении
+  function findClusters(maskScreen) {
+    const w = maskScreen.width;
+    const h = maskScreen.height;
+    const g = Math.max(1, Math.ceil(Math.max(w, h) / 400));
+    const gw = Math.ceil(w / g);
+    const gh = Math.ceil(h / g);
+    const small = makeCanvas(gw, gh);
+    const sctx = small.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(maskScreen, 0, 0, gw, gh);
+    const d = sctx.getImageData(0, 0, gw, gh).data;
+    const bin = new Uint8Array(gw * gh);
+    for (let i = 0; i < gw * gh; i++) bin[i] = d[i * 4 + 3] > 4 ? 1 : 0;
+    const seen = new Uint8Array(gw * gh);
+    const stack = new Int32Array(gw * gh);
+    let boxes = [];
+    for (let i = 0; i < gw * gh; i++) {
+      if (!bin[i] || seen[i]) continue;
+      let sp = 0;
+      stack[sp++] = i;
+      seen[i] = 1;
+      let x0 = gw, y0 = gh, x1 = 0, y1 = 0;
+      while (sp) {
+        const j = stack[--sp];
+        const x = j % gw;
+        const y = (j / gw) | 0;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+        const nb = [x > 0 ? j - 1 : -1, x < gw - 1 ? j + 1 : -1, y > 0 ? j - gw : -1, y < gh - 1 ? j + gw : -1];
+        for (const q of nb) if (q >= 0 && bin[q] && !seen[q]) { seen[q] = 1; stack[sp++] = q; }
+      }
+      boxes.push([x0 * g, y0 * g, (x1 + 1) * g, (y1 + 1) * g]);
+    }
+    // Объединяем группы, которые стоят рядом
+    const grow = (b) => {
+      const m = Math.max(b[2] - b[0], b[3] - b[1]) * 0.35 + 8;
+      return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
+    };
+    let merged = true;
+    while (merged && boxes.length > 1) {
+      merged = false;
+      outer: for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const A = grow(boxes[i]);
+          const B = grow(boxes[j]);
+          if (A[0] < B[2] && B[0] < A[2] && A[1] < B[3] && B[1] < A[3]) {
+            boxes[i] = [Math.min(boxes[i][0], boxes[j][0]), Math.min(boxes[i][1], boxes[j][1]),
+              Math.max(boxes[i][2], boxes[j][2]), Math.max(boxes[i][3], boxes[j][3])];
+            boxes.splice(j, 1);
+            merged = true;
+            break outer;
+          }
+        }
+      }
+    }
+    return boxes.map((b) => [Math.max(0, b[0] - g), Math.max(0, b[1] - g), Math.min(w, b[2] + g), Math.min(h, b[3] + g)]);
+  }
+
+  // Насколько «толстый» предмет: двойное расстояние от самой дальней точки до края маски
+  function holeThickness(hole, w, h) {
+    const INF = 1e9;
+    const d = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) d[i] = hole[i] ? INF : 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!d[i]) continue;
+        let v = d[i];
+        if (x > 0) v = Math.min(v, d[i - 1] + 1);
+        if (y > 0) v = Math.min(v, d[i - w] + 1);
+        if (x > 0 && y > 0) v = Math.min(v, d[i - w - 1] + 1.414);
+        if (x < w - 1 && y > 0) v = Math.min(v, d[i - w + 1] + 1.414);
+        d[i] = v;
+      }
+    }
+    let max = 0;
+    for (let y = h - 1; y >= 0; y--) {
+      for (let x = w - 1; x >= 0; x--) {
+        const i = y * w + x;
+        if (!d[i]) continue;
+        let v = d[i];
+        if (x < w - 1) v = Math.min(v, d[i + 1] + 1);
+        if (y < h - 1) v = Math.min(v, d[i + w] + 1);
+        if (x < w - 1 && y < h - 1) v = Math.min(v, d[i + w + 1] + 1.414);
+        if (x > 0 && y < h - 1) v = Math.min(v, d[i + w - 1] + 1.414);
+        d[i] = v;
+        if (v < INF && v > max) max = v;
+      }
+    }
+    return max * 2;
+  }
+
+  function windowStarts(start, len, size, limit) {
+    if (len <= size) return [Math.round(clamp(start + len / 2 - size / 2, 0, limit - size))];
+    const n = Math.ceil((len - size) / (size * 0.6)) + 1;
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(Math.round(clamp(start + ((len - size) * i) / (n - 1), 0, limit - size)));
+    return out;
+  }
+
+  // Одна работа нейросети LaMa: кусок фото (ww×wh) → 512×512 → заливка обратно в размер куска
+  async function lamaFill(src, wx, wy, ww, wh, holeWin) {
+    const S = 512;
+    const ic = makeCanvas(S, S);
+    const ictx = ic.getContext('2d', { willReadFrequently: true });
+    ictx.imageSmoothingQuality = 'high';
+    ictx.drawImage(src, wx, wy, ww, wh, 0, 0, S, S);
+    const id = ictx.getImageData(0, 0, S, S).data;
+    const holeNative = maskToCanvas(holeWin, ww, wh);
+    const hc = makeCanvas(S, S);
+    const hctx = hc.getContext('2d', { willReadFrequently: true });
+    hctx.imageSmoothingQuality = 'high';
+    hctx.drawImage(holeNative, 0, 0, S, S);
+    const hd = hctx.getImageData(0, 0, S, S).data;
+
+    const N = S * S;
+    const imgT = new Float32Array(3 * N);
+    const maskT = new Float32Array(N);
+    for (let i = 0, p = 0; i < N; i++, p += 4) {
+      imgT[i] = id[p] / 255;
+      imgT[i + N] = id[p + 1] / 255;
+      imgT[i + 2 * N] = id[p + 2] / 255;
+      maskT[i] = hd[p + 3] > 8 ? 1 : 0;
+    }
+    const out = await runModel('eraser', {
+      image: { type: 'float32', data: imgT, dims: [1, 3, S, S] },
+      mask: { type: 'float32', data: maskT, dims: [1, 1, S, S] },
+    });
+    const rd = out.output.data;
+    const fillImg = new ImageData(S, S);
+    for (let i = 0, p = 0; i < N; i++, p += 4) {
+      fillImg.data[p] = rd[i];
+      fillImg.data[p + 1] = rd[i + N];
+      fillImg.data[p + 2] = rd[i + 2 * N];
+      fillImg.data[p + 3] = 255;
+    }
+    const fillC = makeCanvas(S, S);
+    fillC.getContext('2d').putImageData(fillImg, 0, 0);
+    const fill = makeCanvas(ww, wh);
+    const fctx = fill.getContext('2d', { willReadFrequently: true });
+    fctx.imageSmoothingQuality = 'high';
+    fctx.drawImage(fillC, 0, 0, ww, wh);
+    return { fill, holeNative };
+  }
+
+  // Кладёт заливку на фото только там, где была дыра, с мягким краем
+  function compositeFill(work, fill, holeNative, wx, wy) {
+    const ww = fill.width;
+    const wh = fill.height;
+    const soft = makeCanvas(ww, wh);
+    const sctx = soft.getContext('2d');
+    const sm = makeCanvas(Math.max(1, ww / 2), Math.max(1, wh / 2));
+    const smctx = sm.getContext('2d');
+    smctx.imageSmoothingQuality = 'high';
+    smctx.drawImage(holeNative, 0, 0, sm.width, sm.height);
+    sctx.drawImage(holeNative, 0, 0);
+    sctx.imageSmoothingQuality = 'high';
+    sctx.drawImage(sm, 0, 0, ww, wh);
+    const layer = makeCanvas(ww, wh);
+    const lctx = layer.getContext('2d');
+    lctx.drawImage(fill, 0, 0);
+    lctx.globalCompositeOperation = 'destination-in';
+    lctx.drawImage(soft, 0, 0);
+    work.getContext('2d').drawImage(layer, wx, wy);
+  }
+
+  // Стирает одну группу предметов прямо в work и возвращает исправленный кусок фото.
+  // 1) ИИ смотрит на предмет с большим запасом фона — так он верно понимает, что за ним
+  //    (горизонт, вода, песок), но рисует в уменьшенном виде.
+  // 2) Если предмет тонкий или вытянутый, ИИ ещё раз дорисовывает его окнами
+  //    в полном разрешении. Цвет и форма берутся из первого прохода, мелкие детали —
+  //    из второго. Поэтому на месте предмета нет «мыла».
+  async function eraseCluster(work, maskScreen, box) {
+    const toBase = mMul(frameMatrix(state, preview.width, preview.height, 1, true), mS(preview.width / srcW));
+    const toSrc = mInv(toBase);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [cx, cy] of [[box[0], box[1]], [box[2], box[1]], [box[0], box[3]], [box[2], box[3]]]) {
+      const [sx, sy] = mApply(toSrc, cx, cy);
+      x0 = Math.min(x0, sx); y0 = Math.min(y0, sy);
+      x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
+    }
+    if (Math.max(x1 - x0, y1 - y0) < 2) return null;
+
+    // Маска в полном разрешении
+    const maxPad = Math.ceil(Math.max(12, Math.max(srcW, srcH) * 0.01)) + 4;
+    const bx = Math.max(0, Math.floor(x0 - maxPad));
+    const by = Math.max(0, Math.floor(y0 - maxPad));
+    const bw = Math.min(srcW, Math.ceil(x1 + maxPad)) - bx;
+    const bh = Math.min(srcH, Math.ceil(y1 + maxPad)) - by;
+    if (bw < 2 || bh < 2) return null;
+    const mc = makeCanvas(bw, bh);
+    const mctx = mc.getContext('2d', { willReadFrequently: true });
+    const Mn = mMul(mT(-bx, -by), toSrc);
+    mctx.setTransform(Mn[0], Mn[1], Mn[2], Mn[3], Mn[4], Mn[5]);
+    mctx.beginPath();
+    mctx.rect(box[0], box[1], box[2] - box[0], box[3] - box[1]);
+    mctx.clip();
+    mctx.imageSmoothingEnabled = true;
+    mctx.drawImage(maskScreen, 0, 0);
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    const md = mctx.getImageData(0, 0, bw, bh).data;
+    let hole = new Uint8Array(bw * bh);
+    for (let i = 0; i < bw * bh; i++) hole[i] = md[i * 4 + 3] > 8 ? 1 : 0;
+    // Расширяем маску по толщине предмета: захватываем край и тень, но не лишний фон
+    const t0 = holeThickness(hole, bw, bh);
+    const dil = Math.min(maxPad - 2, Math.max(5, Math.max(srcW, srcH) * 0.0025, t0 * 0.12));
+    hole = dilateMask(hole, bw, bh, Math.round(dil));
+
+    let hx0 = bw, hy0 = bh, hx1 = -1, hy1 = -1;
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        if (!hole[y * bw + x]) continue;
+        if (x < hx0) hx0 = x;
+        if (x > hx1) hx1 = x;
+        if (y < hy0) hy0 = y;
+        if (y > hy1) hy1 = y;
+      }
+    }
+    if (hx1 < 0) return null;
+    const big = Math.max(hx1 - hx0 + 1, hy1 - hy0 + 1);
+    const t = holeThickness(hole, bw, bh);
+
+    // Вырезает дыру для прямоугольника (rx, ry, rw, rh) в координатах фото
+    const holeFor = (src, rx, ry, rw, rh) => {
+      const out = new Uint8Array(rw * rh);
+      let count = 0;
+      for (let y = 0; y < rh; y++) {
+        const yy = ry + y - by;
+        if (yy < 0 || yy >= bh) continue;
+        for (let x = 0; x < rw; x++) {
+          const xx = rx + x - bx;
+          if (xx >= 0 && xx < bw && src[yy * bw + xx]) { out[y * rw + x] = 1; count++; }
+        }
+      }
+      return count ? out : null;
+    };
+
+    // Проход 1: большой обзор
+    const margin = Math.max(64, Math.min(big * 0.9, 700));
+    const sideA = Math.max(512, big + margin * 2);
+    const aw = Math.round(Math.min(sideA, srcW));
+    const ah = Math.round(Math.min(sideA, srcH));
+    const ax = Math.round(clamp(bx + (hx0 + hx1) / 2 - aw / 2, 0, srcW - aw));
+    const ay = Math.round(clamp(by + (hy0 + hy1) / 2 - ah / 2, 0, srcH - ah));
+    const kA = Math.max(aw, ah) / 512;
+
+    // Проход 2: окна в полном разрешении (в 3 раза толще предмета)
+    const Wn = Math.round(Math.max(512, t * 3));
+    const ww = Math.min(Wn, srcW);
+    const wh = Math.min(Wn, srcH);
+    const kB = Math.max(ww, wh) / 512;
+    const twoPass = kA > 1.3 && kA > kB * 1.25;
+
+    const holeA = holeFor(hole, ax, ay, aw, ah);
+    const A = await lamaFill(work, ax, ay, aw, ah, holeA);
+
+    if (!twoPass) {
+      if (kA > 1.6) {
+        // Нейросеть рисовала в уменьшенном виде — возвращаем мелкие детали
+        const merged = makeCanvas(aw, ah);
+        const mgctx = merged.getContext('2d', { willReadFrequently: true });
+        mgctx.drawImage(work, ax, ay, aw, ah, 0, 0, aw, ah);
+        const lay = makeCanvas(aw, ah);
+        const lctx = lay.getContext('2d');
+        lctx.drawImage(A.fill, 0, 0);
+        lctx.globalCompositeOperation = 'destination-in';
+        lctx.drawImage(A.holeNative, 0, 0);
+        mgctx.drawImage(lay, 0, 0);
+        const data = mgctx.getImageData(0, 0, aw, ah);
+        restoreDetail(data.data, aw, ah, holeA, kA);
+        mgctx.putImageData(data, 0, 0);
+        compositeFill(work, merged, A.holeNative, ax, ay);
+      } else {
+        compositeFill(work, A.fill, A.holeNative, ax, ay);
+      }
+    } else {
+      const xs = windowStarts(bx + hx0, hx1 - hx0 + 1, ww, srcW);
+      const ys = windowStarts(by + hy0, hy1 - hy0 + 1, wh, srcH);
+      const remaining = hole.slice();
+      const total = xs.length * ys.length;
+      let done = 0;
+      for (const wy of ys) {
+        for (const wx of xs) {
+          done++;
+          const holeW = holeFor(remaining, wx, wy, ww, wh);
+          if (!holeW) continue;
+          setAIStatus(`ИИ прорисовывает детали: ${done} из ${total}`, done / total);
+          const B = await lamaFill(work, wx, wy, ww, wh, holeW);
+          compositeFill(work, B.fill, B.holeNative, wx, wy);
+          for (let y = 0; y < wh; y++) {
+            const yy = wy + y - by;
+            if (yy < 0 || yy >= bh) continue;
+            for (let x = 0; x < ww; x++) {
+              const xx = wx + x - bx;
+              if (xx >= 0 && xx < bw && holeW[y * ww + x]) remaining[yy * bw + xx] = 0;
+            }
+          }
+        }
+      }
+
+      // Склеиваем: цвет и форма из прохода 1, мелкие детали из прохода 2
+      const sigma = 0.5 * kA;
+      const m = Math.ceil(sigma * 3) + 2;
+      const rx = Math.max(0, bx + hx0 - m);
+      const ry = Math.max(0, by + hy0 - m);
+      const rw = Math.min(srcW, bx + hx1 + 1 + m) - rx;
+      const rh = Math.min(srcH, by + hy1 + 1 + m) - ry;
+      const wctx = work.getContext('2d', { willReadFrequently: true });
+      const Bimg = wctx.getImageData(rx, ry, rw, rh);
+      const Ac = makeCanvas(rw, rh);
+      const actx = Ac.getContext('2d', { willReadFrequently: true });
+      actx.drawImage(work, rx, ry, rw, rh, 0, 0, rw, rh);
+      const lay = makeCanvas(aw, ah);
+      const lctx = lay.getContext('2d');
+      lctx.drawImage(A.fill, 0, 0);
+      lctx.globalCompositeOperation = 'destination-in';
+      lctx.drawImage(A.holeNative, 0, 0);
+      actx.drawImage(lay, ax - rx, ay - ry);
+      const Ad = actx.getImageData(0, 0, rw, rh).data;
+      const Bd = Bimg.data;
+      const LA = new Uint8ClampedArray(Ad);
+      const LB = new Uint8ClampedArray(Bd);
+      blurArray(LA, rw, rh, sigma);
+      blurArray(LB, rw, rh, sigma);
+      const holeR = holeFor(hole, rx, ry, rw, rh);
+      for (let i = 0; i < rw * rh; i++) {
+        if (!holeR || !holeR[i]) continue;
+        const q = i * 4;
+        Bd[q] = LA[q] + Bd[q] - LB[q];
+        Bd[q + 1] = LA[q + 1] + Bd[q + 1] - LB[q + 1];
+        Bd[q + 2] = LA[q + 2] + Bd[q + 2] - LB[q + 2];
+      }
+      wctx.putImageData(Bimg, rx, ry);
+    }
+
+    // Исправленный кусок фото для истории (чтобы работали отмена и повтор)
+    const px0 = Math.max(0, bx + hx0 - 4);
+    const py0 = Math.max(0, by + hy0 - 4);
+    const px1 = Math.min(srcW, bx + hx1 + 5);
+    const py1 = Math.min(srcH, by + hy1 + 5);
+    const region = makeCanvas(px1 - px0, py1 - py0);
+    region.getContext('2d').drawImage(work, px0, py0, px1 - px0, py1 - py0, 0, 0, px1 - px0, py1 - py0);
+    return { x: px0, y: py0, canvas: region };
+  }
 
   async function runEraser() {
     if (aiBusy || !original) return;
-    if (!eraseStrokes.length) {
-      toast('Сначала закрасьте то, что нужно убрать.');
+    if (!eraseStrokes.length && !selCanvas) {
+      toast(eraseMode === 'tap'
+        ? 'Сначала нажмите на предмет, который нужно убрать.'
+        : 'Сначала закрасьте то, что нужно убрать.');
       return;
     }
     setBusy(true, 'ИИ стирает…');
     try {
-      const session = await getSession('eraser');
+      await loadModels(['eraser']);
       setAIStatus('ИИ дорисовывает фон…', null);
       await nextFrame();
+      ensureBase();
+      const maskScreen = buildEraseMask();
+      const clusters = findClusters(maskScreen);
+      if (!clusters.length) throw new Error('empty');
 
-      const src = currentSource();
-      // Из координат экрана в координаты исходного фото
-      const toBase = mMul(frameMatrix(state, preview.width, preview.height, 1, true), mS(preview.width / srcW));
-      const toSrc = mInv(toBase);
-      const k = Math.sqrt(Math.abs(toSrc[0] * toSrc[3] - toSrc[1] * toSrc[2]));
-
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const s of eraseStrokes) {
-        const r = s.r * k;
-        for (const pt of s.points) {
-          const [x, y] = mApply(toSrc, pt[0], pt[1]);
-          minX = Math.min(minX, x - r); minY = Math.min(minY, y - r);
-          maxX = Math.max(maxX, x + r); maxY = Math.max(maxY, y + r);
-        }
-      }
-      const margin = Math.max(maxX - minX, maxY - minY) * 0.6 + 32;
-      const R = {
-        x: Math.max(0, Math.floor(minX - margin)),
-        y: Math.max(0, Math.floor(minY - margin)),
-      };
-      R.w = Math.min(srcW, Math.ceil(maxX + margin)) - R.x;
-      R.h = Math.min(srcH, Math.ceil(maxY + margin)) - R.y;
-      if (R.w < 8 || R.h < 8) throw new Error('empty');
-
-      const f = Math.min(1, 1024 / Math.max(R.w, R.h));
-      const iw = Math.max(8, Math.round(R.w * f));
-      const ih = Math.max(8, Math.round(R.h * f));
-
-      const imgC = makeCanvas(iw, ih);
-      const ictx = imgC.getContext('2d', { willReadFrequently: true });
-      ictx.imageSmoothingQuality = 'high';
-      ictx.drawImage(src, R.x, R.y, R.w, R.h, 0, 0, iw, ih);
-
-      const maskC = makeCanvas(iw, ih);
-      const mctx = maskC.getContext('2d', { willReadFrequently: true });
-      const M = mChain(mS(f), mT(-R.x, -R.y), toSrc);
-      mctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
-      paintEraseStrokes(mctx, '#000');
-      mctx.setTransform(1, 0, 0, 1, 0, 0);
-
-      const id = ictx.getImageData(0, 0, iw, ih).data;
-      const md = mctx.getImageData(0, 0, iw, ih).data;
-      const n = iw * ih;
-      const imgT = new Uint8Array(n * 3);
-      const maskT = new Uint8Array(n);
-      for (let i = 0, p = 0; i < n; i++, p += 4) {
-        imgT[i] = id[p];
-        imgT[i + n] = id[p + 1];
-        imgT[i + 2 * n] = id[p + 2];
-        maskT[i] = md[p + 3] > 20 ? 0 : 255; // 0 — стереть, 255 — оставить
-      }
-
-      const ort = window.ort;
-      const out = await session.run({
-        image: new ort.Tensor('uint8', imgT, [1, 3, ih, iw]),
-        mask: new ort.Tensor('uint8', maskT, [1, 1, ih, iw]),
-      });
-      const res = out[session.outputNames[0]];
-      const rd = res.data;
-      const [, , oh, ow] = res.dims;
-      const outImg = new ImageData(ow, oh);
-      const on = ow * oh;
-      for (let i = 0, p = 0; i < on; i++, p += 4) {
-        outImg.data[p] = rd[i];
-        outImg.data[p + 1] = rd[i + on];
-        outImg.data[p + 2] = rd[i + 2 * on];
-        outImg.data[p + 3] = 255;
-      }
-      const outC = makeCanvas(ow, oh);
-      outC.getContext('2d').putImageData(outImg, 0, 0);
-
-      // Кладём результат только туда, где закрашено, с мягким краем
-      const layer = makeCanvas(R.w, R.h);
-      const lctx = layer.getContext('2d');
-      lctx.imageSmoothingQuality = 'high';
-      lctx.drawImage(outC, 0, 0, R.w, R.h);
-      lctx.globalCompositeOperation = 'destination-in';
-      lctx.drawImage(maskC, 0, 0, R.w, R.h);
-
-      const patch = makeCanvas(R.w, R.h);
-      const pctx = patch.getContext('2d');
-      pctx.drawImage(src, R.x, R.y, R.w, R.h, 0, 0, R.w, R.h);
-      pctx.drawImage(layer, 0, 0);
-
-      patchList = patchList.slice(0, state.patches);
-      patchList.push({ x: R.x, y: R.y, canvas: patch });
       if (!workSource) {
         workSource = makeCanvas(srcW, srcH);
         workSource.getContext('2d').drawImage(original, 0, 0);
       }
-      workSource.getContext('2d').drawImage(patch, R.x, R.y);
+      const parts = [];
+      for (let i = 0; i < clusters.length; i++) {
+        if (clusters.length > 1) setAIStatus(`ИИ стирает предмет ${i + 1} из ${clusters.length}`, i / clusters.length);
+        const part = await eraseCluster(workSource, maskScreen, clusters[i]);
+        if (!part) continue;
+        parts.push(part);
+      }
+      if (!parts.length) throw new Error('empty');
+
+      patchList = patchList.slice(0, state.patches);
+      patchList.push({ parts });
       state.patches++;
       appliedPatches = state.patches;
       preview = makePreview(workSource);
+      selCanvas = null;
       eraseStrokes = [];
       dirtyBase = true;
       commit();
       requestRender();
-      toast('Готово! Если что-то осталось, закрасьте это ещё раз.');
+      toast('Готово! Если что-то осталось, выделите это ещё раз.');
     } catch (e) {
-      if (String(e.message) === 'empty') toast('Закрашенная область слишком маленькая.', true);
+      if (state.patches === 0) workSource = null;
+      else if (appliedPatches === state.patches) rebuildSource();
+      if (String(e.message) === 'empty') toast('Выделенная область слишком маленькая.', true);
       else aiError(e);
     } finally {
       setBusy(false);
@@ -2251,7 +2965,7 @@
     if (aiBusy || !original) return;
     setBusy(true, 'ИИ ищет главное на фото…');
     try {
-      const session = await getSession('background');
+      await loadModels(['background']);
       setAIStatus('ИИ отделяет фон… Это может занять до 30 секунд.', null);
       await nextFrame();
 
@@ -2268,9 +2982,8 @@
         input[i + n] = d[p + 1] / 255;
         input[i + 2 * n] = d[p + 2] / 255;
       }
-      const ort = window.ort;
-      const out = await session.run({ [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, S, S]) });
-      const alpha = out[session.outputNames[0]].data;
+      const out = await runModel('background', { pixel_values: { type: 'float32', data: input, dims: [1, 3, S, S] } });
+      const alpha = out.alphas.data;
 
       const small = new ImageData(S, S);
       for (let i = 0, p = 0; i < n; i++, p += 4) {
@@ -2301,33 +3014,168 @@
     }
   }
 
+  /* ---------- ИИ: увеличение разрешения (Real-ESRGAN) ---------- */
+
+  // Увеличивает фото в 4 раза по кусочкам и сразу кладёт результат в холст нужного размера
+  async function superResolve(input, outW, outH, onProgress, isCancelled) {
+    await loadModels(['upscale'], saveStatus());
+    const iw = input.width;
+    const ih = input.height;
+    const ictx = input.getContext('2d', { willReadFrequently: true });
+    const out = makeCanvas(outW, outH);
+    const octx = out.getContext('2d');
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    const fx = outW / (iw * 4);
+    const fy = outH / (ih * 4);
+    const T = hasGpu ? 256 : 128;
+    const O = 8;
+    const core = T - O * 2;
+    const tilesX = Math.ceil(iw / core);
+    const tilesY = Math.ceil(ih / core);
+    const total = tilesX * tilesY;
+    let done = 0;
+    const tileC = makeCanvas(T * 4, T * 4);
+    const tctx = tileC.getContext('2d');
+
+    for (let ty = 0; ty < tilesY; ty++) {
+      for (let tx = 0; tx < tilesX; tx++) {
+        if (isCancelled()) throw new Error('cancelled');
+        const cx0 = tx * core;
+        const cy0 = ty * core;
+        const cx1 = Math.min(iw, cx0 + core);
+        const cy1 = Math.min(ih, cy0 + core);
+        const px0 = Math.max(0, cx0 - O);
+        const py0 = Math.max(0, cy0 - O);
+        const px1 = Math.min(iw, cx1 + O);
+        const py1 = Math.min(ih, cy1 + O);
+        const w = px1 - px0;
+        const h = py1 - py0;
+        const d = ictx.getImageData(px0, py0, w, h).data;
+        const n = w * h;
+        const t = new Float32Array(3 * n);
+        for (let i = 0, p = 0; i < n; i++, p += 4) {
+          t[i] = d[p] / 255;
+          t[i + n] = d[p + 1] / 255;
+          t[i + 2 * n] = d[p + 2] / 255;
+        }
+        const res = await runModel('upscale', { input: { type: 'float32', data: t, dims: [1, 3, h, w] } });
+        const od = res.output.data;
+        const W4 = w * 4;
+        const H4 = h * 4;
+        const n4 = W4 * H4;
+        const img = new ImageData(W4, H4);
+        for (let i = 0, p = 0; i < n4; i++, p += 4) {
+          img.data[p] = od[i] * 255;
+          img.data[p + 1] = od[i + n4] * 255;
+          img.data[p + 2] = od[i + 2 * n4] * 255;
+          img.data[p + 3] = 255;
+        }
+        tctx.putImageData(img, 0, 0);
+        // Берём только середину кусочка, чтобы не было швов
+        const dx0 = Math.round(cx0 * 4 * fx);
+        const dy0 = Math.round(cy0 * 4 * fy);
+        const dx1 = Math.round(cx1 * 4 * fx);
+        const dy1 = Math.round(cy1 * 4 * fy);
+        octx.drawImage(tileC, (cx0 - px0) * 4, (cy0 - py0) * 4, (cx1 - cx0) * 4, (cy1 - cy0) * 4,
+          dx0, dy0, dx1 - dx0, dy1 - dy0);
+        done++;
+        onProgress(done / total);
+      }
+    }
+    return out;
+  }
+
   /* ---------- Сохранение ---------- */
+
+  // Размер по длинной стороне
+  const SIZES = { original: 0, '4k': 3840, '2k': 2560, '1080': 1920, '720': 1280, '480': 854 };
+  const SR_MAX_INPUT = 2200000; // больше этого ИИ-увеличение считается слишком долго
 
   let exportCanvas = null;
   let exportBlob = null;
   let exportFormat = 'jpeg';
+  let exportSize = 'original';
+  let aiDetail = true;
+  let exportJob = 0;
   let blobTimer = null;
   let blobJob = 0;
+  let srCache = null;
 
-  async function renderFullSize() {
-    await Promise.all(state.items.filter((t) => t.kind === 'text').map((t) =>
-      document.fonts.load(fontString(fontOf(t), 40), t.text || 'А').catch(() => {})));
+  function saveStatus() {
+    return el.saveStatus;
+  }
 
-    const src = currentSource();
+  function cloneCanvas(c) {
+    const out = makeCanvas(c.width, c.height);
+    out.getContext('2d', { willReadFrequently: true }).drawImage(c, 0, 0);
+    return out;
+  }
+
+  function exportPlan() {
     const [W, H] = orientedSize(srcW, srcH, state.m);
     const cw = state.crop.w * W;
     const ch = state.crop.h * H;
-    const scale = Math.min(1, Math.sqrt(EXPORT_MAX_PIXELS / (cw * ch)));
+    const long = Math.max(cw, ch);
+    const target = SIZES[exportSize] || long;
+    const scale = Math.min(target / long, Math.sqrt(EXPORT_MAX_PIXELS / (cw * ch)));
     const [pw, ph] = frameSize(state, srcW, srcH, scale, true);
+    return { cw, ch, scale, pw, ph, upscale: scale > 1.05 };
+  }
+
+  function srKey(plan) {
+    return JSON.stringify([imageId, state.patches, state.m, state.angle, state.crop, plan.pw, plan.ph]);
+  }
+
+  // Фото нужного размера без цветовых правок
+  async function renderPhoto(plan, onProgress, isCancelled) {
+    const src = currentSource();
+    const { scale, pw, ph } = plan;
+
+    if (plan.upscale && aiDetail) {
+      const key = srKey(plan);
+      if (srCache && srCache.key === key) return cloneCanvas(srCache.canvas);
+      const s0 = Math.min(1, Math.sqrt(SR_MAX_INPUT / (plan.cw * plan.ch)));
+      const [iw, ih] = frameSize(state, srcW, srcH, s0, true);
+      const input = makeCanvas(iw, ih);
+      drawWithMatrix(input.getContext('2d', { willReadFrequently: true }), src, frameMatrix(state, srcW, srcH, s0, true));
+      const out = await superResolve(input, pw, ph, onProgress, isCancelled);
+      srCache = { key, canvas: out };
+      return cloneCanvas(out);
+    }
+
     const photo = makeCanvas(pw, ph);
     const pctx = photo.getContext('2d', { willReadFrequently: true });
-    drawWithMatrix(pctx, src, frameMatrix(state, srcW, srcH, scale, true));
+    if (scale >= 0.5) {
+      drawWithMatrix(pctx, src, frameMatrix(state, srcW, srcH, scale, true));
+      return photo;
+    }
+    // Сильное уменьшение делаем в несколько шагов: так фото остаётся чётким
+    const s1 = Math.min(1, scale * 4);
+    let step = makeCanvas(...frameSize(state, srcW, srcH, s1, true));
+    drawWithMatrix(step.getContext('2d'), src, frameMatrix(state, srcW, srcH, s1, true));
+    while (step.width / 2 > pw) {
+      const half = makeCanvas(step.width / 2, step.height / 2);
+      const hctx = half.getContext('2d');
+      hctx.imageSmoothingQuality = 'high';
+      hctx.drawImage(step, 0, 0, half.width, half.height);
+      step = half;
+    }
+    pctx.imageSmoothingQuality = 'high';
+    pctx.drawImage(step, 0, 0, pw, ph);
+    return photo;
+  }
 
+  async function renderFullSize(plan, onProgress, isCancelled) {
+    await Promise.all(state.items.filter((t) => t.kind === 'text').map((t) =>
+      document.fonts.load(fontString(fontOf(t), 40), t.text || 'А').catch(() => {})));
+
+    const photo = await renderPhoto(plan, onProgress, isCancelled);
     let mask = null;
     if (bgActive(state)) {
       const mk = maskList[state.bg.mask];
-      mask = makeCanvas(pw, ph);
-      drawWithMatrix(mask.getContext('2d'), mk, frameMatrix(state, mk.width, mk.height, (scale * srcW) / mk.width, true));
+      mask = makeCanvas(photo.width, photo.height);
+      drawWithMatrix(mask.getContext('2d'), mk, frameMatrix(state, mk.width, mk.height, (plan.scale * srcW) / mk.width, true));
     }
     applyLook(photo, paramsFor(state.filter, state.strength, state.adjust), mask, state.bg);
 
@@ -2343,7 +3191,8 @@
   }
 
   function fileName() {
-    return `${fileBaseName}-kadr.${exportFormat === 'png' ? 'png' : 'jpg'}`;
+    const suffix = exportSize === 'original' ? '' : '-' + (exportSize.endsWith('k') ? exportSize : exportSize + 'p');
+    return `${fileBaseName}-kadr${suffix}.${exportFormat === 'png' ? 'png' : 'jpg'}`;
   }
 
   async function prepareBlob() {
@@ -2373,7 +3222,7 @@
       el.btnShare.disabled = false;
     } catch (e) {
       if (job !== blobJob) return;
-      el.saveInfo.textContent = 'Не получилось подготовить файл. Попробуйте формат JPG или уменьшите качество.';
+      el.saveInfo.textContent = 'Не получилось подготовить файл. Попробуйте формат JPG или размер поменьше.';
     }
   }
 
@@ -2382,26 +3231,64 @@
     blobTimer = setTimeout(prepareBlob, 200);
   }
 
+  function updateSizeUI(plan) {
+    setRadio(el.sizes, 'size', exportSize);
+    const showAi = plan.upscale;
+    el.aiDetailField.hidden = !showAi;
+    el.aiDetail.checked = aiDetail;
+    const dims = `${Math.round(plan.cw)} × ${Math.round(plan.ch)}`;
+    let hint = '';
+    if (plan.upscale) {
+      hint = aiDetail
+        ? `Фото (${dims}) меньше выбранного размера. ИИ увеличит его и дорисует мелкие детали. Это может занять от нескольких секунд до пары минут.`
+        : `Фото (${dims}) меньше выбранного размера. Без ИИ оно будет просто растянуто, новых деталей не появится.`;
+    } else if (exportSize !== 'original' && plan.scale < 0.95) {
+      hint = `Фото будет уменьшено до ${plan.pw} × ${plan.ph}.`;
+    }
+    el.sizeHint.hidden = !hint;
+    el.sizeHint.textContent = hint;
+  }
+
+  async function prepareExport() {
+    const job = ++exportJob;
+    const isCancelled = () => job !== exportJob || !el.saveDialog.open;
+    exportCanvas = null;
+    exportBlob = null;
+    blobJob++;
+    el.btnDownload.disabled = true;
+    el.btnShare.disabled = true;
+    const plan = exportPlan();
+    updateSizeUI(plan);
+    el.saveInfo.textContent = 'Готовим фото…';
+    const willSR = plan.upscale && aiDetail && !(srCache && srCache.key === srKey(plan));
+    if (willSR) setStatus(saveStatus(), 'ИИ дорисовывает детали: 0 %', 0);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      const canvas = await renderFullSize(plan, (f) => {
+        if (!isCancelled()) setStatus(saveStatus(), `ИИ дорисовывает детали: ${Math.round(f * 100)} %`, f);
+      }, isCancelled);
+      if (isCancelled()) return;
+      setStatus(saveStatus(), null);
+      exportCanvas = canvas;
+      await prepareBlob();
+    } catch (e) {
+      if (isCancelled() || String(e.message) === 'cancelled') return;
+      console.error(e);
+      setStatus(saveStatus(), null);
+      el.saveInfo.textContent = /ort|model|fetch|load|import/i.test(String(e.message))
+        ? 'Не получилось загрузить ИИ-модель. Проверьте интернет или выключите ИИ-детализацию.'
+        : 'Не получилось подготовить фото. Попробуйте размер поменьше.';
+    }
+  }
+
   async function openSaveDialog() {
     if (!original || aiBusy) return;
     if (mode === 'crop') applyCrop(false);
-    exportCanvas = null;
-    exportBlob = null;
-    el.btnDownload.disabled = true;
-    el.btnShare.disabled = true;
-    el.saveInfo.textContent = 'Готовим фото…';
     el.btnShare.hidden = !canShareFiles();
     setFormat(hasTransparency(state) ? 'png' : exportFormat, true);
     if (typeof el.saveDialog.showModal === 'function') el.saveDialog.showModal();
     else el.saveDialog.setAttribute('open', '');
-    await new Promise((r) => setTimeout(r, 30));
-    try {
-      exportCanvas = await renderFullSize();
-      await prepareBlob();
-    } catch (e) {
-      console.error(e);
-      el.saveInfo.textContent = 'Не получилось подготовить фото. Попробуйте ещё раз.';
-    }
+    await prepareExport();
   }
 
   function closeSaveDialog() {
@@ -2619,10 +3506,13 @@
       requestRender();
     }));
     bindRange(el.eraseSize, el.eraseSizeValue, String, () => requestRender());
-    el.btnEraseClear.addEventListener('click', () => {
-      eraseStrokes = [];
+    el.eraseModeBtns.forEach((b) => b.addEventListener('click', () => {
+      eraseMode = b.dataset.erase;
+      brushHover = null;
+      syncAI();
       requestRender();
-    });
+    }));
+    el.btnEraseClear.addEventListener('click', clearSelection);
     el.btnEraseRun.addEventListener('click', runEraser);
     el.btnBgRun.addEventListener('click', runBackground);
     el.bgMode.forEach((b) => b.addEventListener('click', () => {
@@ -2716,6 +3606,17 @@
       exportCanvas = null;
       exportBlob = null;
       blobJob++;
+      exportJob++;
+      setStatus(saveStatus(), null);
+    });
+    el.sizes.forEach((b) => b.addEventListener('click', () => {
+      if (exportSize === b.dataset.size) return;
+      exportSize = b.dataset.size;
+      prepareExport();
+    }));
+    el.aiDetail.addEventListener('change', () => {
+      aiDetail = el.aiDetail.checked;
+      prepareExport();
     });
     el.saveDialog.addEventListener('click', (e) => {
       if (e.target === el.saveDialog) closeSaveDialog(); // клик по затемнению вокруг окна
@@ -2783,6 +3684,8 @@
     setTab,
     runEraser,
     runBackground,
+    selectAt,
     get busy() { return aiBusy; },
+    get gpu() { return hasGpu; },
   };
 })();

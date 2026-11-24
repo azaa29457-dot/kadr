@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Кадр — бесплатный фоторедактор с ИИ прямо в браузере</title>
-  <meta name="description" content="Стирайте лишние предметы, меняйте фон, добавляйте фильтры, текст и стикеры. Бесплатно, без регистрации и водяных знаков. Фото не загружается в интернет.">
+  <meta name="description" content="Стирайте лишние предметы одним нажатием, меняйте фон, сохраняйте в 4K. Фильтры, текст и стикеры. Бесплатно, без регистрации и водяных знаков.">
   <meta name="theme-color" content="#18181a">
   <meta property="og:title" content="Кадр — фоторедактор с ИИ прямо в браузере">
   <meta property="og:description" content="ИИ-ластик, удаление фона, фильтры, текст и стикеры. Бесплатно и без водяных знаков.">
@@ -33,6 +33,7 @@
       <symbol id="i-frame" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><rect x="7.5" y="7.5" width="9" height="9" rx="1"/></symbol>
       <symbol id="i-gift" viewBox="0 0 24 24"><rect x="3.5" y="8" width="17" height="4" rx="1"/><path d="M5 12v8h14v-8M12 8v12"/><path d="M12 8S10.5 3.5 8 4.2C5.8 4.8 7 8 12 8zM12 8s1.5-4.5 4-3.8C18.2 4.8 17 8 12 8z"/></symbol>
       <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2.5" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h7"/><rect x="15.5" y="9" width="6" height="11" rx="1.5"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
       <symbol id="i-drag" viewBox="0 0 24 24"><path d="m9 7-5 5 5 5M15 7l5 5-5 5"/></symbol>
     </defs>
   </svg>
@@ -56,7 +57,7 @@
     <section class="hero container">
       <div class="hero-text">
         <h1>Фоторедактор с&nbsp;ИИ прямо в&nbsp;браузере</h1>
-        <p class="lead">Стирайте лишние предметы, меняйте фон, добавляйте фильтры, текст и стикеры. Бесплатно, без регистрации и водяных знаков.</p>
+        <p class="lead">Стирайте лишнее одним нажатием, меняйте фон, сохраняйте в 4K. Фильтры, текст и стикеры в придачу. Бесплатно, без регистрации и водяных знаков.</p>
         <div class="actions">
           <a class="btn btn-primary btn-large" href="editor.html">
             <svg class="icon"><use href="#i-image"/></svg><span>Открыть редактор</span>
@@ -102,7 +103,7 @@
         </figure>
         <div class="example-text">
           <h3>Уберите лишнее</h3>
-          <p>Закрасьте кистью то, что мешает: прохожего, провод, лодку. ИИ сотрёт предмет и дорисует то, что было за ним.</p>
+          <p>Нажмите на то, что мешает: прохожего, лодку, мусор. ИИ сам выделит предмет, сотрёт его и дорисует то, что было за ним, в полном разрешении.</p>
           <p class="where"><svg class="icon"><use href="#i-eraser"/></svg><span>В редакторе: ИИ → Ластик</span></p>
         </div>
       </article>
@@ -158,7 +159,7 @@
           <li class="feature">
             <svg class="icon"><use href="#i-eraser"/></svg>
             <h3>ИИ-ластик</h3>
-            <p>Убирает лишние предметы и дорисовывает то, что было за ними.</p>
+            <p>Нажмите на предмет, и ИИ сам выделит его, сотрёт и дорисует фон.</p>
           </li>
           <li class="feature">
             <svg class="icon"><use href="#i-layers"/></svg>
@@ -184,6 +185,21 @@
             <svg class="icon"><use href="#i-frame"/></svg>
             <h3>Рамки</h3>
             <p>Обычные и полароидные рамки, скруглённые углы.</p>
+          </li>
+          <li class="feature">
+            <svg class="icon"><use href="#i-image"/></svg>
+            <h3>Качество до 4K</h3>
+            <p>Сохранение в 4K, 2K, 1080p, 720p и 480p. Если фото маленькое, ИИ дорисует детали.</p>
+          </li>
+          <li class="feature">
+            <svg class="icon"><use href="#i-undo"/></svg>
+            <h3>Отмена любого шага</h3>
+            <p>Все правки можно отменить и вернуть, а исходное фото всегда остаётся целым.</p>
+          </li>
+          <li class="feature">
+            <svg class="icon"><use href="#i-lock"/></svg>
+            <h3>Без загрузки в интернет</h3>
+            <p>Даже ИИ работает прямо в браузере, на вашем устройстве.</p>
           </li>
         </ul>
       </div>
@@ -224,7 +240,7 @@
     <div class="container footer-inner">
       <p><strong>Кадр</strong> — бесплатный фоторедактор в браузере.</p>
       <p>Фото для примеров с Unsplash: <a href="https://unsplash.com/@zesa">Hans-Joachim Kaiser</a>, <a href="https://unsplash.com/@jimmydaddy">JinHui CHEN</a>, <a href="https://unsplash.com/@mitchorr">Mitchell Orr</a> и <a href="https://unsplash.com/@huddi">Michael Hutter</a>. Обработка сделана в Кадре.</p>
-      <p>ИИ-модели: MI-GAN (Picsart AI Research, лицензия MIT) и ORMBG (лицензия Apache 2.0). Шрифты распространяются по лицензии SIL Open Font License.</p>
+      <p>ИИ-модели: LaMa (лицензия Apache 2.0), SlimSAM (Apache 2.0), ORMBG (Apache 2.0) и Real-ESRGAN (BSD-3-Clause). Шрифты распространяются по лицензии SIL Open Font License.</p>
     </div>
   </footer>
 

@@ -971,6 +971,30 @@ textarea:focus { outline: none; border-color: var(--accent); }
 
 .segmented button:disabled { opacity: .4; }
 
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.chips.chips-wrap {
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+.dialog .chip { height: 34px; padding: 7px 12px 0; }
+
 /* ==========================================================
    Окно сохранения
    ========================================================== */
