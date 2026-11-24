@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Кадр — бесплатный фоторедактор онлайн без регистрации</title>
+  <meta name="description" content="Редактируйте фото прямо в браузере: фильтры, яркость и контраст, обрезка под соцсети, текст на фото. Бесплатно, без регистрации и водяных знаков. Фото не загружается в интернет.">
+  <meta name="theme-color" content="#18181a">
+  <meta property="og:title" content="Кадр — бесплатный фоторедактор онлайн">
+  <meta property="og:description" content="Фильтры, обрезка, текст на фото. Без регистрации и водяных знаков, фото остаётся на вашем устройстве.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181a'/%3E%3Cpath d='M7 12V9a2 2 0 0 1 2-2h3M20 7h3a2 2 0 0 1 2 2v3M25 20v3a2 2 0 0 1-2 2h-3M12 25H9a2 2 0 0 1-2-2v-3' fill='none' stroke='%23f2f0eb' stroke-width='2.2' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='%23ffc53d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Иконки: каждая рисуется один раз и дальше используется через <use> -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="2.8" fill="#ffc53d" stroke="none"/></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="9" cy="9" r="1.8"/><path d="m21 15-4.5-4.5L6 21"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+      <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 2v20"/><path d="M12 4h6.5A2.5 2.5 0 0 1 21 6.5v11a2.5 2.5 0 0 1-2.5 2.5H12z" fill="currentColor" fill-opacity=".4" stroke="none"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></symbol>
+      <symbol id="i-filters" viewBox="0 0 24 24"><circle cx="9" cy="9.5" r="5"/><circle cx="15" cy="9.5" r="5"/><circle cx="12" cy="14.5" r="5"/></symbol>
+      <symbol id="i-adjust" viewBox="0 0 24 24"><path d="M4 6h9M19 6h1M4 12h3M13 12h7M4 18h11M21 18h-1"/><circle cx="16" cy="6" r="2.2"/><circle cx="10" cy="12" r="2.2"/><circle cx="17.5" cy="18" r="2.2"/></symbol>
+      <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
+      <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 7V4.5h14V7"/><path d="M12 4.5V20"/><path d="M9 20h6"/></symbol>
+      <symbol id="i-rot-left" viewBox="0 0 24 24"><path d="M3 3v6h6"/><path d="M3.5 9a8.5 8.5 0 1 1 1.8 8.5"/></symbol>
+      <symbol id="i-rot-right" viewBox="0 0 24 24"><path d="M21 3v6h-6"/><path d="M20.5 9a8.5 8.5 0 1 0-1.8 8.5"/></symbol>
+      <symbol id="i-flip-h" viewBox="0 0 24 24"><path d="M12 3v18" stroke-dasharray="2 2.6"/><path d="M8.5 7 3 12l5.5 5z"/><path d="m15.5 7 5.5 5-5.5 5z" fill="currentColor"/></symbol>
+      <symbol id="i-flip-v" viewBox="0 0 24 24"><path d="M3 12h18" stroke-dasharray="2 2.6"/><path d="M7 8.5 12 3l5 5.5z"/><path d="m7 15.5 5 5.5 5-5.5z" fill="currentColor"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="m6 7 1 13h10l1-13"/><path d="M9 7V4h6v3"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+      <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="app" id="app" data-state="empty">
+
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Кадр — на главную">
+        <svg class="icon brand-icon"><use href="#i-logo"/></svg>
+        <span class="brand-name">Кадр</span>
+      </a>
+
+      <div class="topbar-actions">
+        <button class="tool-btn needs-photo" id="btn-open" type="button" title="Открыть другое фото">
+          <svg class="icon"><use href="#i-image"/></svg><span class="tool-label">Открыть</span>
+        </button>
+        <span class="divider needs-photo" aria-hidden="true"></span>
+        <button class="tool-btn needs-photo" id="btn-undo" type="button" title="Отменить (Ctrl+Z)" aria-label="Отменить" disabled>
+          <svg class="icon"><use href="#i-undo"/></svg>
+        </button>
+        <button class="tool-btn needs-photo" id="btn-redo" type="button" title="Повторить (Ctrl+Shift+Z)" aria-label="Повторить" disabled>
+          <svg class="icon"><use href="#i-redo"/></svg>
+        </button>
+        <button class="tool-btn needs-photo" id="btn-compare" type="button" title="Удерживайте, чтобы увидеть фото без обработки" aria-label="Сравнить с оригиналом">
+          <svg class="icon"><use href="#i-compare"/></svg><span class="tool-label">До и после</span>
+        </button>
+        <button class="btn btn-primary needs-photo" id="btn-save" type="button">
+          <svg class="icon"><use href="#i-download"/></svg><span>Сохранить</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace">
+
+      <section class="stage" id="stage" aria-label="Фото">
+        <div class="empty" id="empty">
+          <div class="viewfinder">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <h1 class="empty-title">Откройте фото, чтобы начать</h1>
+            <p class="empty-text">Перетащите файл в эту рамку или вставьте картинку из буфера обмена (Ctrl+V).</p>
+            <button class="btn btn-primary btn-large" id="btn-pick" type="button">
+              <svg class="icon"><use href="#i-image"/></svg><span>Выбрать фото</span>
+            </button>
+          </div>
+          <p class="privacy">
+            <svg class="icon"><use href="#i-lock"/></svg>
+            <span>Фото не загружается в интернет: всё обрабатывается на вашем устройстве. Без регистрации и водяных знаков.</span>
+          </p>
+        </div>
+
+        <div class="canvas-wrap" id="canvas-wrap" hidden>
+          <canvas id="canvas" aria-label="Редактируемое фото"></canvas>
+          <div class="crop-ui" id="crop-ui" hidden>
+            <div class="crop-clip"><div class="crop-shade" id="crop-shade"></div></div>
+            <div class="crop-box" id="crop-box">
+            <span class="crop-grid" aria-hidden="true"></span>
+            <span class="crop-handle" data-handle="nw"></span>
+            <span class="crop-handle" data-handle="n"></span>
+            <span class="crop-handle" data-handle="ne"></span>
+            <span class="crop-handle" data-handle="e"></span>
+            <span class="crop-handle" data-handle="se"></span>
+            <span class="crop-handle" data-handle="s"></span>
+            <span class="crop-handle" data-handle="sw"></span>
+            <span class="crop-handle" data-handle="w"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="compare-badge" id="compare-badge" hidden>Без обработки</div>
+        <div class="drop-hint" id="drop-hint" aria-hidden="true"><span>Отпустите, чтобы открыть фото</span></div>
+      </section>
+
+      <aside class="panel" id="panel" aria-label="Инструменты">
+        <nav class="tabs" role="tablist" aria-label="Инструменты">
+          <button class="tab" role="tab" type="button" data-tab="filters" aria-selected="true">
+            <svg class="icon"><use href="#i-filters"/></svg><span>Фильтры</span>
+          </button>
+          <button class="tab" role="tab" type="button" data-tab="adjust" aria-selected="false">
+            <svg class="icon"><use href="#i-adjust"/></svg><span>Настройки</span>
+          </button>
+          <button class="tab" role="tab" type="button" data-tab="crop" aria-selected="false">
+            <svg class="icon"><use href="#i-crop"/></svg><span>Обрезка</span>
+          </button>
+          <button class="tab" role="tab" type="button" data-tab="text" aria-selected="false">
+            <svg class="icon"><use href="#i-text"/></svg><span>Текст</span>
+          </button>
+        </nav>
+
+        <div class="panel-body">
+
+          <!-- Фильтры -->
+          <section class="pane" data-pane="filters" role="tabpanel">
+            <h2 class="pane-title">Фильтры</h2>
+            <div class="filmstrip" id="filmstrip" role="listbox" aria-label="Фильтры"></div>
+            <div class="field" id="strength-field" hidden>
+              <div class="field-head">
+                <label for="strength">Сила фильтра</label>
+                <output id="strength-value" for="strength">100</output>
+              </div>
+              <input type="range" id="strength" min="0" max="100" value="100">
+            </div>
+          </section>
+
+          <!-- Настройки -->
+          <section class="pane" data-pane="adjust" role="tabpanel" hidden>
+            <h2 class="pane-title">Настройки</h2>
+            <div class="sliders" id="sliders"></div>
+            <p class="hint">Двойное нажатие на ползунок возвращает его в исходное положение.</p>
+            <button class="btn btn-ghost" id="btn-reset-adjust" type="button">
+              <svg class="icon"><use href="#i-reset"/></svg><span>Сбросить настройки</span>
+            </button>
+          </section>
+
+          <!-- Обрезка -->
+          <section class="pane" data-pane="crop" role="tabpanel" hidden>
+            <h2 class="pane-title">Обрезка и поворот</h2>
+            <div class="group">
+              <h3 class="group-title">Поворот</h3>
+              <div class="icon-row">
+                <button class="square-btn" type="button" id="btn-rot-left" title="Повернуть влево" aria-label="Повернуть влево"><svg class="icon"><use href="#i-rot-left"/></svg></button>
+                <button class="square-btn" type="button" id="btn-rot-right" title="Повернуть вправо" aria-label="Повернуть вправо"><svg class="icon"><use href="#i-rot-right"/></svg></button>
+                <button class="square-btn" type="button" id="btn-flip-h" title="Отразить по горизонтали" aria-label="Отразить по горизонтали"><svg class="icon"><use href="#i-flip-h"/></svg></button>
+                <button class="square-btn" type="button" id="btn-flip-v" title="Отразить по вертикали" aria-label="Отразить по вертикали"><svg class="icon"><use href="#i-flip-v"/></svg></button>
+              </div>
+            </div>
+            <div class="group">
+              <h3 class="group-title">Пропорции</h3>
+              <div class="chips" id="ratios" role="radiogroup" aria-label="Пропорции обрезки">
+                <button class="chip" type="button" role="radio" data-ratio="free" aria-checked="true">Свободно</button>
+                <button class="chip" type="button" role="radio" data-ratio="original" aria-checked="false">Как в оригинале</button>
+                <button class="chip" type="button" role="radio" data-ratio="1:1" aria-checked="false">1:1 <small>аватарка</small></button>
+                <button class="chip" type="button" role="radio" data-ratio="4:5" aria-checked="false">4:5 <small>Instagram</small></button>
+                <button class="chip" type="button" role="radio" data-ratio="9:16" aria-checked="false">9:16 <small>сторис</small></button>
+                <button class="chip" type="button" role="radio" data-ratio="16:9" aria-checked="false">16:9 <small>YouTube</small></button>
+              </div>
+            </div>
+            <p class="hint">Перетащите рамку или потяните за её края.</p>
+            <div class="btn-row">
+              <button class="btn btn-ghost" type="button" id="btn-crop-reset">
+                <svg class="icon"><use href="#i-reset"/></svg><span>Сбросить</span>
+              </button>
+              <button class="btn btn-primary" type="button" id="btn-crop-apply">
+                <svg class="icon"><use href="#i-check"/></svg><span>Применить</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Текст -->
+          <section class="pane" data-pane="text" role="tabpanel" hidden>
+            <h2 class="pane-title">Текст</h2>
+            <button class="btn btn-secondary btn-wide" type="button" id="btn-add-text">
+              <svg class="icon"><use href="#i-plus"/></svg><span>Добавить текст</span>
+            </button>
+            <p class="hint" id="text-hint">Добавьте надпись, а затем перетащите её на нужное место прямо на фото.</p>
+
+            <div class="text-editor" id="text-editor" hidden>
+              <div class="field">
+                <label class="field-label" for="text-input">Надпись</label>
+                <textarea id="text-input" rows="2" maxlength="300" spellcheck="true"></textarea>
+              </div>
+
+              <div class="field">
+                <span class="field-label" id="font-label">Шрифт</span>
+                <div class="font-grid" id="font-grid" role="radiogroup" aria-labelledby="font-label"></div>
+              </div>
+
+              <div class="field">
+                <div class="field-head">
+                  <label for="text-size">Размер</label>
+                  <output id="text-size-value" for="text-size">40</output>
+                </div>
+                <input type="range" id="text-size" min="0" max="100" value="40">
+              </div>
+
+              <div class="field">
+                <span class="field-label" id="color-label">Цвет</span>
+                <div class="swatches" id="swatches" role="radiogroup" aria-labelledby="color-label"></div>
+              </div>
+
+              <div class="field">
+                <span class="field-label" id="style-label">Оформление</span>
+                <div class="segmented" id="text-style" role="radiogroup" aria-labelledby="style-label">
+                  <button type="button" role="radio" data-style="plain" aria-checked="false">Обычный</button>
+                  <button type="button" role="radio" data-style="outline" aria-checked="true">Обводка</button>
+                  <button type="button" role="radio" data-style="shadow" aria-checked="false">Тень</button>
+                  <button type="button" role="radio" data-style="box" aria-checked="false">Плашка</button>
+                </div>
+              </div>
+
+              <button class="btn btn-danger btn-wide" type="button" id="btn-delete-text">
+                <svg class="icon"><use href="#i-trash"/></svg><span>Удалить надпись</span>
+              </button>
+            </div>
+          </section>
+
+        </div>
+      </aside>
+    </main>
+
+    <!-- Окно сохранения -->
+    <dialog class="dialog" id="save-dialog" aria-labelledby="save-title">
+      <div class="dialog-inner">
+        <div class="dialog-head">
+          <h2 id="save-title">Сохранить фото</h2>
+          <button class="tool-btn" type="button" id="btn-save-close" aria-label="Закрыть"><svg class="icon"><use href="#i-close"/></svg></button>
+        </div>
+
+        <div class="field">
+          <span class="field-label" id="format-label">Формат</span>
+          <div class="segmented" id="format" role="radiogroup" aria-labelledby="format-label">
+            <button type="button" role="radio" data-format="jpeg" aria-checked="true">JPG</button>
+            <button type="button" role="radio" data-format="png" aria-checked="false">PNG</button>
+          </div>
+          <p class="hint" id="format-hint">JPG весит меньше и подходит для соцсетей и мессенджеров.</p>
+        </div>
+
+        <div class="field" id="quality-field">
+          <div class="field-head">
+            <label for="quality">Качество</label>
+            <output id="quality-value" for="quality">92&nbsp;%</output>
+          </div>
+          <input type="range" id="quality" min="40" max="100" value="92">
+        </div>
+
+        <p class="save-info" id="save-info">Готовим фото…</p>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" id="btn-share" hidden>
+            <svg class="icon"><use href="#i-share"/></svg><span>Поделиться</span>
+          </button>
+          <button class="btn btn-primary" type="button" id="btn-download">
+            <svg class="icon"><use href="#i-download"/></svg><span>Скачать</span>
+          </button>
+        </div>
+      </div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
