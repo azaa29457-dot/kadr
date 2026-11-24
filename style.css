@@ -383,6 +383,13 @@ button:disabled { cursor: default; }
   position: relative;
   line-height: 0;
   box-shadow: 0 14px 44px rgba(0, 0, 0, .45);
+  /* Шахматка видна там, где фон прозрачный */
+  background-color: #3a3a3f;
+  background-image:
+    linear-gradient(45deg, #4a4a50 25%, transparent 25%, transparent 75%, #4a4a50 75%),
+    linear-gradient(45deg, #4a4a50 25%, transparent 25%, transparent 75%, #4a4a50 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
 }
 .canvas-wrap.reveal { animation: reveal .4s cubic-bezier(.2, .8, .2, 1); }
 @keyframes reveal {
@@ -396,6 +403,7 @@ button:disabled { cursor: default; }
   -webkit-user-select: none;
 }
 .app.is-over-text #canvas { cursor: grab; }
+.app.is-painting #canvas { cursor: crosshair; }
 .app.is-dragging-text #canvas { cursor: grabbing; }
 
 /* Пустой экран */
@@ -486,7 +494,7 @@ button:disabled { cursor: default; }
 }
 .app:not([data-state="empty"]) .stage.is-dragover .drop-hint { opacity: 1; }
 
-.compare-badge {
+.stage-badge {
   position: absolute;
   top: 14px;
   left: 50%;
@@ -581,8 +589,8 @@ button:disabled { cursor: default; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 9px 4px 8px;
+  gap: 4px;
+  padding: 8px 4px 7px;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
@@ -818,7 +826,7 @@ input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba
 .segmented button[aria-checked="true"] { background: var(--surface-3); color: var(--text); }
 
 /* Текст */
-.text-editor { display: flex; flex-direction: column; gap: 20px; }
+.item-editor { display: flex; flex-direction: column; gap: 20px; }
 
 textarea {
   width: 100%;
@@ -882,6 +890,86 @@ textarea:focus { outline: none; border-color: var(--accent); }
   border: 0;
   padding: 0;
 }
+
+
+/* ==========================================================
+   Новые инструменты
+   ========================================================== */
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.stage-badge.is-busy::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, .3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.slider-groups { display: flex; flex-direction: column; gap: 26px; }
+.slider-group { display: flex; flex-direction: column; gap: 16px; }
+.slider-group .group-title { margin: 0 0 -4px; }
+
+.ai-section { display: flex; flex-direction: column; gap: 18px; }
+.bg-options { display: flex; flex-direction: column; gap: 18px; }
+.ai-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ai-status-text { margin: 0; font-size: 14px; font-weight: 500; }
+.progress {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--track);
+}
+.progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width .2s;
+}
+.progress.is-indeterminate span {
+  width: 35%;
+  animation: indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+.ai-note { font-size: 12.5px; }
+
+.sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+.sticker-btn {
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-size: 24px;
+  line-height: 1;
+  transition: background-color .15s, transform .1s;
+}
+.sticker-btn:hover { background: var(--surface-3); }
+.sticker-btn:active { transform: scale(.92); }
+
+.segmented button:disabled { opacity: .4; }
 
 /* ==========================================================
    Окно сохранения
@@ -971,12 +1059,17 @@ textarea:focus { outline: none; border-color: var(--accent); }
   }
   .tabs {
     order: 2;
+    display: flex;
     gap: 2px;
+    overflow-x: auto;
     padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
     border-bottom: 0;
     border-top: 1px solid var(--line);
+    scrollbar-width: none;
   }
-  .tab { padding: 7px 2px 6px; font-size: 12px; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: 0 0 auto; min-width: 70px; padding: 7px 6px 6px; font-size: 12px; }
+  .sticker-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
   .panel-body { order: 1; padding: 14px 16px 16px; }
   .pane { gap: 16px; }
 

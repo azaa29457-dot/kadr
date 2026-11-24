@@ -3,11 +3,14 @@
    Фото никуда не отправляется: вся обработка идёт на устройстве.
 
    Как устроено:
-   1. state — описание всех правок (фильтр, ползунки, обрезка, текст).
-      Само фото не меняется, поэтому любую правку можно отменить.
+   1. state — описание всех правок (фильтр, ползунки, обрезка, текст…).
+      Исходное фото не меняется, поэтому любую правку можно отменить.
    2. Чтобы показать результат, программа берёт исходное фото
       и заново применяет к нему все правки из state.
    3. При сохранении то же самое делается с фото в полном размере.
+   4. ИИ-инструменты (ластик и удаление фона) работают через
+      библиотеку ONNX Runtime прямо в браузере. Модели скачиваются
+      один раз при первом запуске, само фото никуда не уходит.
    ========================================================== */
 'use strict';
 
@@ -15,19 +18,58 @@
 
   /* ---------- Настройки ---------- */
 
-  const PREVIEW_MAX = 1600;          // максимальная сторона фото на экране (для скорости)
+  const PREVIEW_MAX = 1600;           // максимальная сторона фото на экране (для скорости)
   const EXPORT_MAX_PIXELS = 16000000; // ограничение для iPhone: больше 16 Мп Safari не сохранит
-  const THUMB_SIZE = 140;            // размер миниатюр фильтров
-  const HISTORY_LIMIT = 60;          // сколько шагов можно отменить
+  const MASK_MAX = 2048;              // размер маски фона
+  const THUMB_SIZE = 140;             // размер миниатюр фильтров
+  const HISTORY_LIMIT = 60;           // сколько шагов можно отменить
 
-  const ADJUSTMENTS = [
-    { key: 'brightness', label: 'Яркость', min: -100, max: 100 },
-    { key: 'contrast', label: 'Контраст', min: -100, max: 100 },
-    { key: 'saturation', label: 'Насыщенность', min: -100, max: 100 },
-    { key: 'warmth', label: 'Теплота', min: -100, max: 100 },
-    { key: 'blur', label: 'Размытие', min: 0, max: 100 },
-    { key: 'vignette', label: 'Виньетка', min: 0, max: 100 },
+  const ORT_VERSION = '1.31.1';
+  const ORT_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+  const MODELS = {
+    eraser: {
+      // MI-GAN, Picsart AI Research, лицензия MIT
+      url: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx',
+      sizeMb: 28,
+    },
+    background: {
+      // ORMBG, лицензия Apache 2.0
+      url: 'https://huggingface.co/onnx-community/ormbg-ONNX/resolve/main/onnx/model_quantized.onnx',
+      sizeMb: 44,
+    },
+  };
+
+  const ADJUST_GROUPS = [
+    {
+      title: 'Свет',
+      items: [
+        { key: 'exposure', label: 'Экспозиция', min: -100, max: 100 },
+        { key: 'brightness', label: 'Яркость', min: -100, max: 100 },
+        { key: 'contrast', label: 'Контраст', min: -100, max: 100 },
+        { key: 'highlights', label: 'Светлые участки', min: -100, max: 100 },
+        { key: 'shadows', label: 'Тени', min: -100, max: 100 },
+      ],
+    },
+    {
+      title: 'Цвет',
+      items: [
+        { key: 'saturation', label: 'Насыщенность', min: -100, max: 100 },
+        { key: 'warmth', label: 'Теплота', min: -100, max: 100 },
+        { key: 'tint', label: 'Оттенок', min: -100, max: 100 },
+        { key: 'fade', label: 'Выцветание', min: 0, max: 100 },
+      ],
+    },
+    {
+      title: 'Эффекты',
+      items: [
+        { key: 'sharpness', label: 'Резкость', min: 0, max: 100 },
+        { key: 'grain', label: 'Зерно', min: 0, max: 100 },
+        { key: 'blur', label: 'Размытие', min: 0, max: 100 },
+        { key: 'vignette', label: 'Виньетка', min: 0, max: 100 },
+      ],
+    },
   ];
+  const ADJUSTMENTS = ADJUST_GROUPS.flatMap((g) => g.items);
 
   // Каждый фильтр — это набор готовых значений ползунков
   const FILTERS = [
@@ -35,10 +77,10 @@
     { id: 'vivid', name: 'Яркий', p: { saturation: 45, contrast: 15 } },
     { id: 'warm', name: 'Тёплый', p: { warmth: 35, saturation: 10, brightness: 3 } },
     { id: 'cold', name: 'Холодный', p: { warmth: -35, contrast: 6 } },
-    { id: 'film', name: 'Плёнка', p: { fade: 0.45, warmth: 10, contrast: 12, saturation: -12 } },
-    { id: 'cinema', name: 'Кино', p: { contrast: 22, saturation: -10, warmth: 12, fade: 0.25, vignette: 28 } },
-    { id: 'vintage', name: 'Винтаж', p: { sepia: 0.3, fade: 0.6, contrast: -6, saturation: -20, warmth: 15, vignette: 35 } },
-    { id: 'pastel', name: 'Пастель', p: { fade: 0.7, saturation: -18, brightness: 10, contrast: -15 } },
+    { id: 'film', name: 'Плёнка', p: { fade: 45, warmth: 10, contrast: 12, saturation: -12 } },
+    { id: 'cinema', name: 'Кино', p: { contrast: 22, saturation: -10, warmth: 12, fade: 25, vignette: 28 } },
+    { id: 'vintage', name: 'Винтаж', p: { sepia: 0.3, fade: 60, contrast: -6, saturation: -20, warmth: 15, vignette: 35 } },
+    { id: 'pastel', name: 'Пастель', p: { fade: 70, saturation: -18, brightness: 10, contrast: -15 } },
     { id: 'drama', name: 'Драма', p: { contrast: 40, saturation: -25, brightness: -6, vignette: 45 } },
     { id: 'bw', name: 'Ч/б', p: { grayscale: 1, contrast: 12 } },
     { id: 'noir', name: 'Нуар', p: { grayscale: 1, contrast: 50, brightness: -10, vignette: 30 } },
@@ -55,6 +97,7 @@
     { id: 'comfortaa', family: 'Comfortaa', weight: 700, name: 'Округлый' },
     { id: 'onest', family: 'Onest', weight: 600, name: 'Простой' },
   ];
+  const EMOJI_FONT = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
 
   const COLORS = [
     { value: '#ffffff', name: 'Белый' },
@@ -66,8 +109,27 @@
     { value: '#3ddc84', name: 'Зелёный' },
     { value: '#9b6bff', name: 'Фиолетовый' },
   ];
+  const FRAME_COLORS = [
+    { value: '#ffffff', name: 'Белый' },
+    { value: '#111111', name: 'Чёрный' },
+    { value: '#f3ead8', name: 'Кремовый' },
+    { value: '#ffc53d', name: 'Жёлтый' },
+    { value: '#ff7ac6', name: 'Розовый' },
+    { value: '#4da3ff', name: 'Синий' },
+    { value: '#3ddc84', name: 'Зелёный' },
+    { value: '#9b6bff', name: 'Фиолетовый' },
+  ];
+
+  const STICKERS = [
+    '😀', '😂', '😍', '🥰', '😎', '🤩', '😜', '🥳', '😇', '🤔', '😱', '😭',
+    '👍', '👏', '🙌', '💪', '✌️', '🤘', '❤️', '🧡', '💛', '💚', '💙', '💜',
+    '💖', '🔥', '✨', '⭐', '🌟', '⚡', '🌈', '☀️', '🌙', '☁️', '🌸', '🌹',
+    '🌴', '🍀', '🍕', '🍔', '🍩', '☕', '🎉', '🎈', '🎁', '🎵', '📸', '🚀',
+    '👑', '💎', '🐶', '🐱', '🦋', '👀', '💯', '✅',
+  ];
 
   const RATIOS = { '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9 };
+  const FULL = { x: 0, y: 0, w: 1, h: 1 };
 
   // Повороты и отражения в виде матриц 2×2: [a, b, c, d]
   const OPS = {
@@ -95,7 +157,7 @@
     btnRedo: $('#btn-redo'),
     btnCompare: $('#btn-compare'),
     btnSave: $('#btn-save'),
-    compareBadge: $('#compare-badge'),
+    badge: $('#stage-badge'),
     tabs: $$('.tab'),
     panes: $$('.pane'),
     filmstrip: $('#filmstrip'),
@@ -103,17 +165,39 @@
     strength: $('#strength'),
     strengthValue: $('#strength-value'),
     sliders: $('#sliders'),
+    btnAuto: $('#btn-auto'),
     btnResetAdjust: $('#btn-reset-adjust'),
     cropUI: $('#crop-ui'),
     cropBox: $('#crop-box'),
     cropShade: $('#crop-shade'),
     ratios: $$('#ratios .chip'),
+    angle: $('#angle'),
+    angleValue: $('#angle-value'),
     btnRotLeft: $('#btn-rot-left'),
     btnRotRight: $('#btn-rot-right'),
     btnFlipH: $('#btn-flip-h'),
     btnFlipV: $('#btn-flip-v'),
     btnCropReset: $('#btn-crop-reset'),
     btnCropApply: $('#btn-crop-apply'),
+    aiMode: $$('#ai-mode button'),
+    aiErase: $('#ai-erase'),
+    aiBg: $('#ai-bg'),
+    eraseSize: $('#erase-size'),
+    eraseSizeValue: $('#erase-size-value'),
+    btnEraseClear: $('#btn-erase-clear'),
+    btnEraseRun: $('#btn-erase-run'),
+    btnBgRun: $('#btn-bg-run'),
+    bgHint: $('#bg-hint'),
+    bgOptions: $('#bg-options'),
+    bgMode: $$('#bg-mode button'),
+    bgColorField: $('#bg-color-field'),
+    bgSwatches: $('#bg-swatches'),
+    bgBlurField: $('#bg-blur-field'),
+    bgBlur: $('#bg-blur'),
+    bgBlurValue: $('#bg-blur-value'),
+    aiStatus: $('#ai-status'),
+    aiStatusText: $('#ai-status-text'),
+    aiProgress: $('#ai-progress'),
     btnAddText: $('#btn-add-text'),
     textHint: $('#text-hint'),
     textEditor: $('#text-editor'),
@@ -121,9 +205,29 @@
     fontGrid: $('#font-grid'),
     textSize: $('#text-size'),
     textSizeValue: $('#text-size-value'),
+    textRotation: $('#text-rotation'),
+    textRotationValue: $('#text-rotation-value'),
     swatches: $('#swatches'),
     textStyle: $$('#text-style button'),
     btnDeleteText: $('#btn-delete-text'),
+    stickerGrid: $('#sticker-grid'),
+    stickerHint: $('#sticker-hint'),
+    stickerEditor: $('#sticker-editor'),
+    stickerSize: $('#sticker-size'),
+    stickerSizeValue: $('#sticker-size-value'),
+    stickerRotation: $('#sticker-rotation'),
+    stickerRotationValue: $('#sticker-rotation-value'),
+    btnDeleteSticker: $('#btn-delete-sticker'),
+    drawSwatches: $('#draw-swatches'),
+    drawSize: $('#draw-size'),
+    drawSizeValue: $('#draw-size-value'),
+    btnDrawClear: $('#btn-draw-clear'),
+    frameStyle: $$('#frame-style button'),
+    frameWidth: $('#frame-width'),
+    frameWidthValue: $('#frame-width-value'),
+    frameSwatches: $('#frame-swatches'),
+    frameRadius: $('#frame-radius'),
+    frameRadiusValue: $('#frame-radius-value'),
     saveDialog: $('#save-dialog'),
     btnSaveClose: $('#btn-save-close'),
     format: $$('#format button'),
@@ -140,14 +244,25 @@
 
   /* ---------- Состояние ---------- */
 
+  function zeroAdjust() {
+    const a = {};
+    for (const item of ADJUSTMENTS) a[item.key] = 0;
+    return a;
+  }
+
   function defaultState() {
     return {
       m: [1, 0, 0, 1],                    // поворот и отражение
-      crop: { x: 0, y: 0, w: 1, h: 1 },   // обрезка в долях от размера фото
+      angle: 0,                           // наклон в градусах
+      crop: { ...FULL },                  // обрезка в долях от размера фото
       filter: 'none',
       strength: 100,
-      adjust: { brightness: 0, contrast: 0, saturation: 0, warmth: 0, blur: 0, vignette: 0 },
-      texts: [],
+      adjust: zeroAdjust(),
+      patches: 0,                         // сколько раз сработал ИИ-ластик
+      bg: { mask: -1, mode: 'none', color: '#ffffff', blur: 60 },
+      items: [],                          // надписи и стикеры
+      strokes: [],                        // рисунок кистью
+      frame: { style: 'even', width: 0, color: '#ffffff', radius: 0 },
     };
   }
 
@@ -155,25 +270,41 @@
   let history = [];
   let historyIndex = -1;
 
-  let source = null;       // исходное фото в полном размере
-  let preview = null;      // уменьшенная копия для быстрого показа на экране
+  let original = null;        // исходное фото
+  let srcW = 0;
+  let srcH = 0;
+  let workSource = null;      // фото с правками ИИ-ластика (полный размер)
+  let appliedPatches = 0;
+  let patchList = [];         // куски фото, исправленные ластиком
+  let maskList = [];          // маски фона от ИИ
+  let preview = null;         // уменьшенная копия для быстрого показа на экране
+  let originalPreview = null; // уменьшенная копия исходника (для «До и после»)
   let fileBaseName = 'photo';
 
-  let mode = 'normal';     // 'normal' или 'crop'
+  let mode = 'normal';        // 'normal' или 'crop'
   let activeTab = 'filters';
+  let aiTool = 'erase';
   let comparing = false;
-  let selectedTextId = null;
+  let aiBusy = false;
+  let selectedId = null;
   let pendingCrop = null;
   let cropRatio = 'free';
 
+  let eraseStrokes = [];      // то, что закрашено для ИИ-ластика
+  let liveStroke = null;      // линия, которую сейчас рисуют
+  let brushHover = null;
+  let drawColor = '#ff4d4d';
+
   // Промежуточные результаты, чтобы не пересчитывать всё при каждом движении
-  let baseCanvas = null;   // фото после поворота и обрезки
+  let baseCanvas = null;      // фото после поворота и обрезки
   let baseData = null;
-  let adjustedCanvas = null; // фото после фильтров и настроек
+  let maskBase = null;        // маска фона в тех же координатах
+  let adjustedCanvas = null;  // фото после фильтров и настроек
   let dirtyBase = true;
   let dirtyAdjust = true;
   let thumbsDirty = true;
-  let textBoxes = new Map();
+  let layout = { ox: 0, oy: 0, w: 1, h: 1 };
+  let itemBoxes = new Map();
 
   const loadedFonts = new Set();
   const loadingFonts = new Set();
@@ -182,6 +313,7 @@
 
   const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
   const uid = () => Math.random().toString(36).slice(2, 10);
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
   function makeCanvas(w, h) {
     const c = document.createElement('canvas');
@@ -196,9 +328,17 @@
     return '0';
   }
 
+  function formatDegrees(v) {
+    const n = Math.round(v * 10) / 10;
+    const text = String(Math.abs(n)).replace('.', ',');
+    if (n > 0) return '+' + text + '°';
+    if (n < 0) return '−' + text + '°';
+    return '0°';
+  }
+
   function formatBytes(bytes) {
-    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' КБ';
-    return (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' МБ';
+    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' КБ';
+    return (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' МБ';
   }
 
   let toastTimer = null;
@@ -207,7 +347,7 @@
     el.toast.classList.toggle('is-error', isError);
     el.toast.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.toast.classList.remove('show'), isError ? 4500 : 2600);
+    toastTimer = setTimeout(() => el.toast.classList.remove('show'), isError ? 5000 : 2800);
   }
 
   function isTyping() {
@@ -215,126 +355,97 @@
     return a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'range'));
   }
 
-  /* ---------- История: отмена и повтор ---------- */
-
-  function commit() {
-    const snap = JSON.stringify(state);
-    if (history[historyIndex] === snap) return;
-    history = history.slice(0, historyIndex + 1);
-    history.push(snap);
-    if (history.length > HISTORY_LIMIT) history.shift();
-    historyIndex = history.length - 1;
-    updateHistoryButtons();
+  function setRadio(buttons, attr, value) {
+    buttons.forEach((b) => b.setAttribute('aria-checked', String(b.dataset[attr] === value)));
   }
 
-  function restore(snap) {
-    const prev = state;
-    state = JSON.parse(snap);
-    if (JSON.stringify(prev.m) !== JSON.stringify(state.m) ||
-        JSON.stringify(prev.crop) !== JSON.stringify(state.crop)) {
-      dirtyBase = true;
-      thumbsDirty = true;
-    }
-    dirtyAdjust = true;
-    if (mode === 'crop') {
-      pendingCrop = { ...state.crop };
-      dirtyBase = true;
-    }
-    if (selectedTextId && !state.texts.some((t) => t.id === selectedTextId)) selectedTextId = null;
-    syncUI();
-    requestRender();
-    updateHistoryButtons();
+  function setFill(input) {
+    const min = +input.min;
+    const max = +input.max;
+    const v = +input.value;
+    const pos = ((v - min) / (max - min)) * 100;
+    const zero = min < 0 ? ((0 - min) / (max - min)) * 100 : 0;
+    input.style.setProperty('--fs', Math.min(zero, pos) + '%');
+    input.style.setProperty('--fe', Math.max(zero, pos) + '%');
   }
 
-  function undo() {
-    if (historyIndex <= 0) return;
-    historyIndex--;
-    restore(history[historyIndex]);
+  /* ---------- Матрицы преобразований ---------- */
+  // Матрица [a, b, c, d, e, f]: x' = a·x + c·y + e, y' = b·x + d·y + f
+
+  const mT = (x, y) => [1, 0, 0, 1, x, y];
+  const mS = (s) => [s, 0, 0, s, 0, 0];
+  const mR = (deg) => {
+    const r = (deg * Math.PI) / 180;
+    return [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0];
+  };
+
+  function mMul(A, B) {
+    return [
+      A[0] * B[0] + A[2] * B[1],
+      A[1] * B[0] + A[3] * B[1],
+      A[0] * B[2] + A[2] * B[3],
+      A[1] * B[2] + A[3] * B[3],
+      A[0] * B[4] + A[2] * B[5] + A[4],
+      A[1] * B[4] + A[3] * B[5] + A[5],
+    ];
   }
 
-  function redo() {
-    if (historyIndex >= history.length - 1) return;
-    historyIndex++;
-    restore(history[historyIndex]);
+  function mChain(...ms) {
+    return ms.reduce((acc, m) => mMul(acc, m));
   }
 
-  function updateHistoryButtons() {
-    el.btnUndo.disabled = historyIndex <= 0;
-    el.btnRedo.disabled = historyIndex >= history.length - 1;
+  function mInv(A) {
+    const det = A[0] * A[3] - A[1] * A[2];
+    return [
+      A[3] / det, -A[1] / det, -A[2] / det, A[0] / det,
+      (A[2] * A[5] - A[3] * A[4]) / det,
+      (A[1] * A[4] - A[0] * A[5]) / det,
+    ];
   }
 
-  /* ---------- Открытие фото ---------- */
-
-  function decodeImage(file) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
-      img.src = url;
-    });
-  }
-
-  async function loadFile(file) {
-    if (!file) return;
-    const looksLikeImage = (file.type && file.type.startsWith('image/')) ||
-      /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(file.name || '');
-    if (!looksLikeImage) {
-      toast('Этот файл не похож на фото. Выберите изображение в формате JPG, PNG или WebP.', true);
-      return;
-    }
-
-    let img;
-    try {
-      img = await decodeImage(file);
-    } catch (e) {
-      const isHeic = /heic|heif/i.test(file.type + ' ' + (file.name || ''));
-      toast(isHeic
-        ? 'Этот браузер не открывает фото в формате HEIC. Сохраните фото в JPG и попробуйте снова.'
-        : 'Не получилось открыть это фото. Попробуйте другой файл.', true);
-      return;
-    }
-
-    source = img;
-    const sw = img.naturalWidth;
-    const sh = img.naturalHeight;
-    const scale = Math.min(1, PREVIEW_MAX / Math.max(sw, sh));
-    preview = makeCanvas(sw * scale, sh * scale);
-    const pctx = preview.getContext('2d');
-    pctx.imageSmoothingQuality = 'high';
-    pctx.drawImage(img, 0, 0, preview.width, preview.height);
-
-    fileBaseName = ((file.name || '').replace(/\.[^.]+$/, '') || 'photo').slice(0, 60);
-
-    state = defaultState();
-    history = [];
-    historyIndex = -1;
-    commit();
-
-    selectedTextId = null;
-    mode = 'normal';
-    pendingCrop = null;
-    cropRatio = 'free';
-    el.cropUI.hidden = true;
-    dirtyBase = true;
-    thumbsDirty = true;
-
-    el.app.dataset.state = 'ready';
-    el.empty.hidden = true;
-    el.wrap.hidden = false;
-    el.wrap.classList.remove('reveal');
-    void el.wrap.offsetWidth;
-    el.wrap.classList.add('reveal');
-
-    setTab('filters');
-    syncUI();
-    renderNow();
-  }
-
-  /* ---------- Геометрия: поворот, отражение, обрезка ---------- */
+  const mApply = (A, x, y) => [A[0] * x + A[2] * y + A[4], A[1] * x + A[3] * y + A[5]];
 
   function orientedSize(w, h, m) {
     return m[0] !== 0 ? [w, h] : [h, w];
+  }
+
+  // Во сколько раз увеличить фото при наклоне, чтобы не было пустых углов
+  function coverScale(W, H, deg) {
+    if (!deg) return 1;
+    const t = (Math.abs(deg) * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    return Math.max((W * c + H * s) / W, (W * s + H * c) / H);
+  }
+
+  // Матрица: пиксели картинки iw×ih → пиксели результата (с поворотом, наклоном, обрезкой)
+  function frameMatrix(st, iw, ih, scale, useCrop) {
+    const [W, H] = orientedSize(iw, ih, st.m);
+    const crop = useCrop ? st.crop : FULL;
+    return mChain(
+      mS(scale),
+      mT(-crop.x * W, -crop.y * H),
+      mT(W / 2, H / 2),
+      mR(st.angle),
+      mS(coverScale(W, H, st.angle)),
+      [st.m[0], st.m[1], st.m[2], st.m[3], 0, 0],
+      mT(-iw / 2, -ih / 2),
+    );
+  }
+
+  function frameSize(st, iw, ih, scale, useCrop) {
+    const [W, H] = orientedSize(iw, ih, st.m);
+    const crop = useCrop ? st.crop : FULL;
+    return [Math.max(1, Math.round(crop.w * W * scale)), Math.max(1, Math.round(crop.h * H * scale))];
+  }
+
+  function drawWithMatrix(context, img, M) {
+    context.save();
+    context.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(img, 0, 0);
+    context.restore();
   }
 
   function multiply(op, m) {
@@ -357,16 +468,145 @@
     }
   }
 
-  // Рисует фото с поворотом и отражением, сдвигом (обрезка) и масштабом
-  function drawTransformed(context, img, iw, ih, m, offsetX, offsetY, scale) {
-    const [W, H] = orientedSize(iw, ih, m);
-    context.save();
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    context.translate(-offsetX, -offsetY);
-    context.transform(m[0], m[1], m[2], m[3], W / 2, H / 2);
-    context.imageSmoothingQuality = 'high';
-    context.drawImage(img, -iw / 2, -ih / 2, iw, ih);
-    context.restore();
+  /* ---------- История: отмена и повтор ---------- */
+
+  function commit() {
+    const snap = JSON.stringify(state);
+    if (history[historyIndex] === snap) return;
+    history = history.slice(0, historyIndex + 1);
+    history.push(snap);
+    if (history.length > HISTORY_LIMIT) history.shift();
+    historyIndex = history.length - 1;
+    updateHistoryButtons();
+  }
+
+  function restore(snap) {
+    state = JSON.parse(snap);
+    if (state.patches !== appliedPatches) rebuildSource();
+    dirtyBase = true;
+    thumbsDirty = true;
+    if (mode === 'crop') pendingCrop = { ...state.crop };
+    if (selectedId && !state.items.some((t) => t.id === selectedId)) selectedId = null;
+    syncUI();
+    requestRender();
+    updateHistoryButtons();
+  }
+
+  function undo() {
+    if (historyIndex <= 0 || aiBusy) return;
+    historyIndex--;
+    restore(history[historyIndex]);
+  }
+
+  function redo() {
+    if (historyIndex >= history.length - 1 || aiBusy) return;
+    historyIndex++;
+    restore(history[historyIndex]);
+  }
+
+  function updateHistoryButtons() {
+    el.btnUndo.disabled = historyIndex <= 0;
+    el.btnRedo.disabled = historyIndex >= history.length - 1;
+  }
+
+  /* ---------- Открытие фото ---------- */
+
+  function decodeImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+      img.src = url;
+    });
+  }
+
+  function makePreview(img) {
+    const scale = Math.min(1, PREVIEW_MAX / Math.max(srcW, srcH));
+    const c = makeCanvas(srcW * scale, srcH * scale);
+    const cctx = c.getContext('2d');
+    cctx.imageSmoothingQuality = 'high';
+    cctx.drawImage(img, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  function currentSource() {
+    return workSource || original;
+  }
+
+  // Собирает фото с правками ластика (нужно после отмены и повтора)
+  function rebuildSource() {
+    const n = state.patches;
+    if (n === 0) {
+      workSource = null;
+    } else {
+      workSource = makeCanvas(srcW, srcH);
+      const wctx = workSource.getContext('2d');
+      wctx.drawImage(original, 0, 0);
+      for (let i = 0; i < n && i < patchList.length; i++) {
+        wctx.drawImage(patchList[i].canvas, patchList[i].x, patchList[i].y);
+      }
+    }
+    appliedPatches = n;
+    preview = makePreview(currentSource());
+  }
+
+  async function loadFile(file) {
+    if (!file || aiBusy) return;
+    const looksLikeImage = (file.type && file.type.startsWith('image/')) ||
+      /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(file.name || '');
+    if (!looksLikeImage) {
+      toast('Этот файл не похож на фото. Выберите изображение в формате JPG, PNG или WebP.', true);
+      return;
+    }
+
+    let img;
+    try {
+      img = await decodeImage(file);
+    } catch (e) {
+      const isHeic = /heic|heif/i.test(file.type + ' ' + (file.name || ''));
+      toast(isHeic
+        ? 'Этот браузер не открывает фото в формате HEIC. Сохраните фото в JPG и попробуйте снова.'
+        : 'Не получилось открыть это фото. Попробуйте другой файл.', true);
+      return;
+    }
+
+    original = img;
+    srcW = img.naturalWidth;
+    srcH = img.naturalHeight;
+    workSource = null;
+    appliedPatches = 0;
+    patchList = [];
+    maskList = [];
+    preview = makePreview(img);
+    originalPreview = preview;
+    fileBaseName = ((file.name || '').replace(/\.[^.]+$/, '') || 'photo').slice(0, 60);
+
+    state = defaultState();
+    history = [];
+    historyIndex = -1;
+    commit();
+
+    selectedId = null;
+    mode = 'normal';
+    pendingCrop = null;
+    cropRatio = 'free';
+    eraseStrokes = [];
+    liveStroke = null;
+    el.cropUI.hidden = true;
+    dirtyBase = true;
+    thumbsDirty = true;
+
+    el.app.dataset.state = 'ready';
+    el.empty.hidden = true;
+    el.wrap.hidden = false;
+    el.wrap.classList.remove('reveal');
+    void el.wrap.offsetWidth;
+    el.wrap.classList.add('reveal');
+
+    setTab('filters');
+    syncUI();
+    renderNow();
   }
 
   /* ---------- Обработка пикселей ---------- */
@@ -376,23 +616,29 @@
     const k = strength / 100;
     const p = f.p;
     const a = adjust;
+    const add = (key) => (p[key] || 0) * k + (a[key] || 0);
     return {
-      brightness: (p.brightness || 0) * k + a.brightness,
-      contrast: (p.contrast || 0) * k + a.contrast,
-      saturation: (p.saturation || 0) * k + a.saturation,
-      warmth: (p.warmth || 0) * k + a.warmth,
-      fade: (p.fade || 0) * k,
+      exposure: add('exposure'),
+      brightness: add('brightness'),
+      contrast: add('contrast'),
+      highlights: add('highlights'),
+      shadows: add('shadows'),
+      saturation: add('saturation'),
+      warmth: add('warmth'),
+      tint: add('tint'),
+      fade: Math.min(100, add('fade')),
       grayscale: (p.grayscale || 0) * k,
       sepia: (p.sepia || 0) * k,
-      vignette: Math.min(100, (p.vignette || 0) * k + a.vignette),
-      blur: a.blur,
+      sharpness: a.sharpness || 0,
+      grain: a.grain || 0,
+      blur: a.blur || 0,
+      vignette: Math.min(100, add('vignette')),
     };
   }
 
-  const ZERO_ADJUST = { brightness: 0, contrast: 0, saturation: 0, warmth: 0, blur: 0, vignette: 0 };
-
-  function needsPixelWork(p) {
-    return p.brightness || p.contrast || p.saturation || p.warmth || p.fade || p.grayscale || p.sepia;
+  function needsColorWork(p) {
+    return p.exposure || p.brightness || p.contrast || p.highlights || p.shadows ||
+      p.saturation || p.warmth || p.tint || p.fade || p.grayscale || p.sepia;
   }
 
   // Таблицы «было → стало» для каждого канала: так обработка идёт быстрее
@@ -400,27 +646,34 @@
     const R = new Uint8ClampedArray(256);
     const G = new Uint8ClampedArray(256);
     const B = new Uint8ClampedArray(256);
+    const ev = Math.pow(2, (clamp(p.exposure, -100, 100) / 100) * 1.5);
     const bri = clamp(p.brightness, -100, 100) / 100;
     const con = clamp(p.contrast, -100, 100) / 100;
     const C = con >= 0 ? 1 + con * 1.2 : 1 + con * 0.75;
-    const fade = clamp(p.fade, 0, 1);
+    const hi = clamp(p.highlights, -100, 100) / 100;
+    const sh = clamp(p.shadows, -100, 100) / 100;
+    const fade = clamp(p.fade, 0, 100) / 100;
     const warm = clamp(p.warmth, -100, 100);
+    const tint = clamp(p.tint, -100, 100);
 
     for (let v = 0; v < 256; v++) {
-      let x = v;
+      let x = v * ev;
       x = bri > 0 ? x + (255 - x) * bri * 0.6 : x * (1 + bri * 0.6);
       x = (x - 128) * C + 128;
       x = clamp(x, 0, 255);
+      const t = x / 255;
+      if (sh) x += sh * 90 * (1 - t) * (1 - t) * t * 2.2;
+      if (hi) x += hi * 90 * t * t * (1 - t) * 2.2 + (hi < 0 ? hi * 18 * t * t * t : 0);
+      x = clamp(x, 0, 255);
       if (fade) x = x + fade * 60 * (1 - x / 255) - fade * 22 * (x / 255);
-      R[v] = x + warm * 0.32;
-      G[v] = x + warm * 0.06;
-      B[v] = x - warm * 0.32;
+      R[v] = x + warm * 0.32 + tint * 0.12;
+      G[v] = x + warm * 0.06 - tint * 0.22;
+      B[v] = x - warm * 0.32 + tint * 0.12;
     }
     return { R, G, B };
   }
 
-  function processPixels(imageData, p) {
-    const d = imageData.data;
+  function processColors(d, p) {
     const { R, G, B } = buildTables(p);
     const S = clamp(1 + p.saturation / 100, 0, 3) * (1 - clamp(p.grayscale, 0, 1));
     const sep = clamp(p.sepia, 0, 1);
@@ -472,35 +725,95 @@
     for (let o = 0; o < outer; o++) {
       const start = horizontal ? o * w * 4 : o * 4;
       const last = start + (inner - 1) * step;
-      let sr = 0, sg = 0, sb = 0;
+      let sr = 0, sg = 0, sb = 0, sa = 0;
       for (let k = -r; k <= r; k++) {
         const idx = start + clamp(k, 0, inner - 1) * step;
-        sr += src[idx]; sg += src[idx + 1]; sb += src[idx + 2];
+        sr += src[idx]; sg += src[idx + 1]; sb += src[idx + 2]; sa += src[idx + 3];
       }
       for (let i = 0; i < inner; i++) {
         const idx = start + i * step;
         dst[idx] = sr * inv;
         dst[idx + 1] = sg * inv;
         dst[idx + 2] = sb * inv;
-        dst[idx + 3] = src[idx + 3];
+        dst[idx + 3] = sa * inv;
         const addIdx = i + r + 1 < inner ? start + (i + r + 1) * step : last;
         const subIdx = i - r > 0 ? start + (i - r) * step : start;
         sr += src[addIdx] - src[subIdx];
         sg += src[addIdx + 1] - src[subIdx + 1];
         sb += src[addIdx + 2] - src[subIdx + 2];
+        sa += src[addIdx + 3] - src[subIdx + 3];
       }
     }
   }
 
-  function blurPixels(imageData, sigma) {
+  function blurArray(data, w, h, sigma) {
     if (sigma < 0.5) return;
-    const { width: w, height: h, data } = imageData;
     const tmp = new Uint8ClampedArray(data.length);
     for (const size of boxSizes(sigma, 3)) {
       const r = (size - 1) / 2;
       if (r < 1) continue;
       blurPass(data, tmp, w, h, r, true);
       blurPass(tmp, data, w, h, r, false);
+    }
+  }
+
+  // Сильное размытие считаем на уменьшенной копии: на вид так же, но в разы быстрее
+  function blurCanvas(canvas, sigma) {
+    if (sigma < 0.5) return;
+    const c = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    const k = Math.min(8, Math.max(1, sigma / 3));
+    if (k < 1.5) {
+      const data = c.getImageData(0, 0, w, h);
+      blurArray(data.data, w, h, sigma);
+      c.putImageData(data, 0, 0);
+      return;
+    }
+    const small = makeCanvas(w / k, h / k);
+    const sctx = small.getContext('2d', { willReadFrequently: true });
+    sctx.imageSmoothingQuality = 'high';
+    sctx.drawImage(canvas, 0, 0, small.width, small.height);
+    const data = sctx.getImageData(0, 0, small.width, small.height);
+    blurArray(data.data, small.width, small.height, sigma / k);
+    sctx.putImageData(data, 0, 0);
+    c.save();
+    c.globalCompositeOperation = 'copy';
+    c.imageSmoothingEnabled = true;
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(small, 0, 0, w, h);
+    c.restore();
+  }
+
+  function sharpen(d, w, h, amount) {
+    const sigma = Math.max(0.7, Math.min(w, h) * 0.0012);
+    const blurred = new Uint8ClampedArray(d);
+    blurArray(blurred, w, h, sigma);
+    const k = (amount / 100) * 1.6;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = d[i] + k * (d[i] - blurred[i]);
+      d[i + 1] = d[i + 1] + k * (d[i + 1] - blurred[i + 1]);
+      d[i + 2] = d[i + 2] + k * (d[i + 2] - blurred[i + 2]);
+    }
+  }
+
+  // Плёночное зерно: случайный шум, который всегда одинаков для одного фото
+  function addGrain(d, w, h, amount) {
+    const amp = (amount / 100) * 46;
+    const cell = Math.max(1, Math.round(Math.min(w, h) / 900));
+    for (let y = 0; y < h; y++) {
+      const cy = (y / cell) | 0;
+      for (let x = 0; x < w; x++) {
+        let n = Math.imul(((x / cell) | 0) ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(cy + 0x632be5ab, 0xc2b2ae35);
+        n ^= n >>> 15;
+        n = Math.imul(n, 0x2c1b3c6d);
+        n ^= n >>> 12;
+        const v = (((n & 0xffff) / 65535) * 2 - 1) * amp;
+        const i = (y * w + x) * 4;
+        d[i] += v;
+        d[i + 1] += v;
+        d[i + 2] += v;
+      }
     }
   }
 
@@ -513,53 +826,66 @@
     g.addColorStop(0.55, `rgba(0,0,0,${a * 0.35})`);
     g.addColorStop(1, `rgba(0,0,0,${a})`);
     context.save();
+    context.globalCompositeOperation = 'source-atop';
     context.fillStyle = g;
     context.fillRect(0, 0, w, h);
     context.restore();
   }
 
-  // Сильное размытие считаем на уменьшенной копии: на вид так же, но в разы быстрее
-  function blurCanvas(canvas, sigma) {
-    if (sigma < 0.5) return;
-    const c = canvas.getContext('2d');
+  // Замена фона: mask — холст той же величины, где непрозрачно то, что оставляем
+  function applyBackground(canvas, mask, bg) {
     const w = canvas.width;
     const h = canvas.height;
-    const k = Math.min(8, Math.max(1, sigma / 3));
-    if (k < 1.5) {
-      const data = c.getImageData(0, 0, w, h);
-      blurPixels(data, sigma);
-      c.putImageData(data, 0, 0);
+    const c = canvas.getContext('2d');
+    const subject = makeCanvas(w, h);
+    const sctx = subject.getContext('2d');
+    sctx.drawImage(canvas, 0, 0);
+    sctx.globalCompositeOperation = 'destination-in';
+    sctx.drawImage(mask, 0, 0, w, h);
+
+    if (bg.mode === 'blur') {
+      blurCanvas(canvas, (bg.blur / 100) * Math.min(w, h) * 0.035 + 2);
+      c.drawImage(subject, 0, 0);
       return;
     }
-    const small = makeCanvas(w / k, h / k);
-    const sctx = small.getContext('2d', { willReadFrequently: true });
-    sctx.imageSmoothingQuality = 'high';
-    sctx.drawImage(canvas, 0, 0, small.width, small.height);
-    const data = sctx.getImageData(0, 0, small.width, small.height);
-    blurPixels(data, sigma / k);
-    sctx.putImageData(data, 0, 0);
     c.save();
-    c.imageSmoothingEnabled = true;
-    c.imageSmoothingQuality = 'high';
-    c.drawImage(small, 0, 0, w, h);
+    c.globalCompositeOperation = 'copy';
+    if (bg.mode === 'color') {
+      c.fillStyle = bg.color;
+      c.fillRect(0, 0, w, h);
+      c.globalCompositeOperation = 'source-over';
+    }
+    c.drawImage(subject, 0, 0);
     c.restore();
   }
 
-  // Применяет все цветовые правки к картинке на холсте
-  function applyLook(canvas, p) {
-    const c = canvas.getContext('2d');
+  function bgActive(st) {
+    return st.bg.mask >= 0 && st.bg.mode !== 'none' && !!maskList[st.bg.mask];
+  }
+
+  // Применяет все правки цвета и эффекты к холсту
+  function applyLook(canvas, p, mask, bg) {
+    const c = canvas.getContext('2d', { willReadFrequently: true });
     const w = canvas.width;
     const h = canvas.height;
-    if (needsPixelWork(p)) {
+
+    if (needsColorWork(p) || p.sharpness > 0) {
       const data = c.getImageData(0, 0, w, h);
-      processPixels(data, p);
+      if (needsColorWork(p)) processColors(data.data, p);
+      if (p.sharpness > 0) sharpen(data.data, w, h, p.sharpness);
       c.putImageData(data, 0, 0);
     }
     if (p.blur > 0) blurCanvas(canvas, (p.blur / 100) * Math.min(w, h) * 0.025);
-    drawVignette(c, w, h, p.vignette);
+    if (mask) applyBackground(canvas, mask, bg);
+    if (p.grain > 0) {
+      const data = c.getImageData(0, 0, w, h);
+      addGrain(data.data, w, h, p.grain);
+      c.putImageData(data, 0, 0);
+    }
+    if (!(mask && bg.mode === 'transparent')) drawVignette(c, w, h, p.vignette);
   }
 
-  /* ---------- Текст на фото ---------- */
+  /* ---------- Надписи, стикеры и рисунок ---------- */
 
   function fontOf(t) {
     return FONTS.find((f) => f.id === t.font) || FONTS[0];
@@ -587,7 +913,8 @@
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#111111' : '#ffffff';
   }
 
-  function roundRect(context, x, y, w, h, r) {
+  function roundRectPath(context, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
     context.beginPath();
     context.moveTo(x + r, y);
     context.arcTo(x + w, y, x + w, y + h, r);
@@ -597,38 +924,45 @@
     context.closePath();
   }
 
-  function drawTexts(context, w, h, texts, opts = {}) {
+  function drawItems(context, w, h, items, opts = {}) {
     const boxes = new Map();
     const short = Math.min(w, h);
-    for (const t of texts) {
-      const font = fontOf(t);
-      if (!opts.export) ensureFont(font);
-      const px = short * (0.025 + (t.size / 100) * 0.18);
+    for (const t of items) {
+      const isSticker = t.kind === 'sticker';
+      const font = isSticker ? null : fontOf(t);
+      if (font && !opts.export) ensureFont(font, t.text);
+      const px = isSticker
+        ? short * (0.04 + (t.size / 100) * 0.32)
+        : short * (0.025 + (t.size / 100) * 0.18);
       const lines = (t.text || '').split('\n');
-      const lineH = px * 1.22;
+      const lineH = px * (isSticker ? 1.1 : 1.22);
+      const cx = t.x * w;
+      const cy = t.y * h;
+      const rot = ((t.rotation || 0) * Math.PI) / 180;
+
       context.save();
-      context.font = fontString(font, px);
+      context.translate(cx, cy);
+      context.rotate(rot);
+      context.font = isSticker ? `${px}px ${EMOJI_FONT}` : fontString(font, px);
       context.textAlign = 'center';
       context.textBaseline = 'middle';
       const widths = lines.map((l) => context.measureText(l).width);
       const maxW = Math.max(px * 0.5, ...widths);
       const blockH = lines.length * lineH;
-      const cx = t.x * w;
-      const cy = t.y * h;
-      const top = cy - blockH / 2;
+      const top = -blockH / 2;
       let padX = px * 0.18;
       let padY = px * 0.12;
-      let fill = t.color;
+      let fill = t.color || '#ffffff';
 
-      if (t.style === 'box') {
+      if (!isSticker && t.style === 'box') {
         padX = px * 0.45;
         padY = px * 0.22;
         context.fillStyle = t.color;
-        roundRect(context, cx - maxW / 2 - padX, top - padY, maxW + padX * 2, blockH + padY * 2, px * 0.3);
+        roundRectPath(context, -maxW / 2 - padX, top - padY, maxW + padX * 2, blockH + padY * 2, px * 0.3);
         context.fill();
         fill = contrastColor(t.color);
       }
-      if (t.style === 'shadow') {
+      if (!isSticker && t.style === 'shadow') {
         context.shadowColor = 'rgba(0, 0, 0, 0.6)';
         context.shadowBlur = px * 0.25;
         context.shadowOffsetY = px * 0.06;
@@ -636,53 +970,162 @@
 
       lines.forEach((line, i) => {
         const y = top + lineH * (i + 0.5);
-        if (t.style === 'outline') {
+        if (!isSticker && t.style === 'outline') {
           context.lineWidth = px * 0.14;
           context.lineJoin = 'round';
           context.miterLimit = 2;
           context.strokeStyle = contrastColor(t.color);
-          context.strokeText(line, cx, y);
+          context.strokeText(line, 0, y);
         }
         context.fillStyle = fill;
-        context.fillText(line, cx, y);
+        context.fillText(line, 0, y);
       });
-      context.restore();
 
       const gap = px * 0.08;
-      const box = {
-        x: cx - maxW / 2 - padX - gap,
-        y: top - padY - gap,
-        w: maxW + (padX + gap) * 2,
-        h: blockH + (padY + gap) * 2,
-      };
-      boxes.set(t.id, box);
+      const hw = maxW / 2 + padX + gap;
+      const hh = blockH / 2 + padY + gap;
+      boxes.set(t.id, { cx, cy, rot, hw, hh });
 
       if (opts.selectedId === t.id) {
         const ui = opts.ui || 1;
-        context.save();
+        context.shadowColor = 'transparent';
         context.setLineDash([6 * ui, 4 * ui]);
         context.lineWidth = 1.5 * ui;
         context.strokeStyle = '#ffc53d';
-        context.strokeRect(box.x, box.y, box.w, box.h);
-        context.restore();
+        context.strokeRect(-hw, -hh, hw * 2, hh * 2);
       }
+      context.restore();
     }
     return boxes;
   }
 
+  function strokeWidth(s, short) {
+    return short * (0.004 + (s.size / 100) * 0.05);
+  }
+
+  function drawStroke(context, s, w, h) {
+    const pts = s.points;
+    if (!pts.length) return;
+    const lw = strokeWidth(s, Math.min(w, h));
+    context.save();
+    context.strokeStyle = s.color;
+    context.fillStyle = s.color;
+    context.lineWidth = lw;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    if (pts.length === 1) {
+      context.beginPath();
+      context.arc(pts[0][0] * w, pts[0][1] * h, lw / 2, 0, Math.PI * 2);
+      context.fill();
+    } else {
+      context.beginPath();
+      context.moveTo(pts[0][0] * w, pts[0][1] * h);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = ((pts[i][0] + pts[i + 1][0]) / 2) * w;
+        const my = ((pts[i][1] + pts[i + 1][1]) / 2) * h;
+        context.quadraticCurveTo(pts[i][0] * w, pts[i][1] * h, mx, my);
+      }
+      const last = pts[pts.length - 1];
+      context.lineTo(last[0] * w, last[1] * h);
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  /* ---------- Рамка и итоговая картинка ---------- */
+
+  function frameLayout(w, h, frame) {
+    const short = Math.min(w, h);
+    let side = (frame.width / 100) * short * 0.12;
+    let bottom = side;
+    if (frame.style === 'polaroid') {
+      side = Math.max(side, short * 0.035);
+      bottom = side * 3.4;
+    }
+    side = Math.round(side);
+    bottom = Math.round(bottom);
+    return {
+      ox: side,
+      oy: side,
+      w,
+      h,
+      W: w + side * 2,
+      H: h + side + bottom,
+      radius: (frame.radius / 100) * short * 0.2,
+      hasFrame: side > 0,
+    };
+  }
+
+  function hasTransparency(st) {
+    const lay = frameLayout(100, 100, st.frame);
+    return (bgActive(st) && st.bg.mode === 'transparent') || (!lay.hasFrame && st.frame.radius > 0);
+  }
+
+  function composeFinal(target, photo, st, opts = {}) {
+    const w = photo.width;
+    const h = photo.height;
+    const lay = frameLayout(w, h, st.frame);
+    if (target.width !== lay.W || target.height !== lay.H) {
+      target.width = lay.W;
+      target.height = lay.H;
+    }
+    const c = target.getContext('2d');
+    c.save();
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, lay.W, lay.H);
+    if (lay.hasFrame) {
+      c.fillStyle = st.frame.color;
+      c.fillRect(0, 0, lay.W, lay.H);
+    }
+    c.translate(lay.ox, lay.oy);
+    if (lay.radius > 0) {
+      roundRectPath(c, 0, 0, w, h, lay.radius);
+      c.clip();
+    }
+    if (lay.hasFrame && hasTransparency(st)) {
+      // Под прозрачным фоном внутри рамки — цвет рамки
+      c.fillStyle = st.frame.color;
+      c.fillRect(0, 0, w, h);
+    }
+    c.drawImage(photo, 0, 0);
+    for (const s of st.strokes) drawStroke(c, s, w, h);
+    if (opts.liveStroke) drawStroke(c, opts.liveStroke, w, h);
+    c.restore();
+
+    c.save();
+    c.translate(lay.ox, lay.oy);
+    const boxes = drawItems(c, w, h, st.items, opts);
+    c.restore();
+    return { lay, boxes };
+  }
+
   /* ---------- Показ на экране ---------- */
+
+  function isErasing() {
+    return activeTab === 'ai' && aiTool === 'erase';
+  }
+
+  function plainView() {
+    return mode === 'crop' || isErasing();
+  }
 
   function ensureBase() {
     if (!dirtyBase) return;
-    const m = state.m;
-    const [W, H] = orientedSize(preview.width, preview.height, m);
-    const r = mode === 'crop' ? { x: 0, y: 0, w: 1, h: 1 } : state.crop;
-    const bw = Math.max(1, Math.round(r.w * W));
-    const bh = Math.max(1, Math.round(r.h * H));
+    const useCrop = mode !== 'crop';
+    const pw = preview.width;
+    const ph = preview.height;
+    const [bw, bh] = frameSize(state, pw, ph, 1, useCrop);
     baseCanvas = makeCanvas(bw, bh);
     const bctx = baseCanvas.getContext('2d', { willReadFrequently: true });
-    drawTransformed(bctx, preview, preview.width, preview.height, m, r.x * W, r.y * H, 1);
+    drawWithMatrix(bctx, preview, frameMatrix(state, pw, ph, 1, useCrop));
     baseData = bctx.getImageData(0, 0, bw, bh);
+
+    maskBase = null;
+    if (bgActive(state)) {
+      const mk = maskList[state.bg.mask];
+      maskBase = makeCanvas(bw, bh);
+      drawWithMatrix(maskBase.getContext('2d'), mk, frameMatrix(state, mk.width, mk.height, pw / mk.width, useCrop));
+    }
     dirtyBase = false;
     dirtyAdjust = true;
     thumbsDirty = true;
@@ -690,13 +1133,12 @@
 
   function ensureAdjusted() {
     if (!dirtyAdjust) return;
-    const p = paramsFor(state.filter, state.strength, state.adjust);
     if (!adjustedCanvas || adjustedCanvas.width !== baseCanvas.width || adjustedCanvas.height !== baseCanvas.height) {
       adjustedCanvas = makeCanvas(baseCanvas.width, baseCanvas.height);
     }
     const actx = adjustedCanvas.getContext('2d', { willReadFrequently: true });
     actx.putImageData(baseData, 0, 0);
-    applyLook(adjustedCanvas, p);
+    applyLook(adjustedCanvas, paramsFor(state.filter, state.strength, state.adjust), maskBase, state.bg);
     dirtyAdjust = false;
   }
 
@@ -705,27 +1147,58 @@
     return el.canvas.width / cssW;
   }
 
-  function renderNow() {
-    if (!source) return;
-    ensureBase();
-    if (!comparing) ensureAdjusted();
-
-    const w = baseCanvas.width;
-    const h = baseCanvas.height;
+  function setCanvasSize(w, h) {
     if (el.canvas.width !== w || el.canvas.height !== h) {
       el.canvas.width = w;
       el.canvas.height = h;
       fitCanvas();
     }
-    ctx.drawImage(comparing ? baseCanvas : adjustedCanvas, 0, 0);
+  }
 
-    if (!comparing && mode !== 'crop') {
-      textBoxes = drawTexts(ctx, w, h, state.texts, {
-        selectedId: activeTab === 'text' ? selectedTextId : null,
-        ui: displayScale(),
-      });
+  function renderCompare() {
+    // Исходное фото без единой правки, но с той же обрезкой
+    const pw = originalPreview.width;
+    const ph = originalPreview.height;
+    const [bw, bh] = frameSize(state, pw, ph, 1, mode !== 'crop');
+    setCanvasSize(bw, bh);
+    ctx.clearRect(0, 0, bw, bh);
+    drawWithMatrix(ctx, originalPreview, frameMatrix(state, pw, ph, 1, mode !== 'crop'));
+    layout = { ox: 0, oy: 0, w: bw, h: bh };
+    itemBoxes = new Map();
+  }
+
+  function renderNow() {
+    if (!original) return;
+    if (comparing) {
+      renderCompare();
+      return;
+    }
+    ensureBase();
+    ensureAdjusted();
+
+    if (plainView()) {
+      const w = adjustedCanvas.width;
+      const h = adjustedCanvas.height;
+      setCanvasSize(w, h);
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(adjustedCanvas, 0, 0);
+      layout = { ox: 0, oy: 0, w, h };
+      itemBoxes = new Map();
+      if (isErasing()) drawEraseOverlay();
     } else {
-      textBoxes = new Map();
+      const lay = frameLayout(adjustedCanvas.width, adjustedCanvas.height, state.frame);
+      setCanvasSize(lay.W, lay.H);
+      const res = composeFinal(el.canvas, adjustedCanvas, state, {
+        selectedId: (activeTab === 'text' || activeTab === 'stickers') ? selectedId : null,
+        ui: displayScale(),
+        liveStroke: activeTab === 'draw' ? liveStroke : null,
+      });
+      layout = res.lay;
+      itemBoxes = res.boxes;
+      if (activeTab === 'draw' && brushHover) {
+        const lw = strokeWidth({ size: +el.drawSize.value }, Math.min(layout.w, layout.h));
+        drawBrushCursor(brushHover.x, brushHover.y, lw / 2);
+      }
     }
 
     if (mode === 'crop') positionCropUI();
@@ -758,6 +1231,22 @@
     }
     el.canvas.style.width = Math.floor(w) + 'px';
     el.canvas.style.height = Math.floor(h) + 'px';
+  }
+
+  function drawBrushCursor(x, y, r) {
+    const ui = displayScale();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(r, 2 * ui), 0, Math.PI * 2);
+    ctx.lineWidth = 1.5 * ui;
+    ctx.strokeStyle = 'rgba(255,255,255,.95)';
+    ctx.stroke();
+    ctx.lineWidth = 1 * ui;
+    ctx.strokeStyle = 'rgba(0,0,0,.6)';
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(r, 2 * ui) + 1.5 * ui, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   /* ---------- Миниатюры фильтров ---------- */
@@ -800,72 +1289,109 @@
     const side = Math.min(bw, bh);
     sctx.imageSmoothingQuality = 'high';
     sctx.drawImage(baseCanvas, (bw - side) / 2, (bh - side) / 2, side, side, 0, 0, THUMB_SIZE, THUMB_SIZE);
-    const original = sctx.getImageData(0, 0, THUMB_SIZE, THUMB_SIZE);
+    const thumbData = sctx.getImageData(0, 0, THUMB_SIZE, THUMB_SIZE);
 
     $$('.frame').forEach((btn) => {
       const c = btn.querySelector('canvas');
       const cctx = c.getContext('2d', { willReadFrequently: true });
-      cctx.putImageData(original, 0, 0);
-      applyLook(c, paramsFor(btn.dataset.filter, 100, ZERO_ADJUST));
+      cctx.putImageData(thumbData, 0, 0);
+      applyLook(c, paramsFor(btn.dataset.filter, 100, zeroAdjust()), null, state.bg);
     });
   }
 
   /* ---------- Ползунки настроек ---------- */
 
-  function setFill(input) {
-    const min = +input.min;
-    const max = +input.max;
-    const v = +input.value;
-    const pos = ((v - min) / (max - min)) * 100;
-    const zero = min < 0 ? ((0 - min) / (max - min)) * 100 : 0;
-    input.style.setProperty('--fs', Math.min(zero, pos) + '%');
-    input.style.setProperty('--fe', Math.max(zero, pos) + '%');
-  }
-
   function buildSliders() {
     el.sliders.innerHTML = '';
-    for (const a of ADJUSTMENTS) {
-      const field = document.createElement('div');
-      field.className = 'field';
-      field.innerHTML = `
-        <div class="field-head">
-          <label for="adj-${a.key}">${a.label}</label>
-          <output id="adj-${a.key}-value" for="adj-${a.key}">0</output>
-        </div>
-        <input type="range" id="adj-${a.key}" min="${a.min}" max="${a.max}" step="1" value="0">`;
-      const input = field.querySelector('input');
-      const output = field.querySelector('output');
-      const show = () => {
-        const v = +input.value;
-        output.textContent = a.min < 0 ? formatSigned(v) : String(v);
-        setFill(input);
-      };
-      input.addEventListener('input', () => {
-        state.adjust[a.key] = +input.value;
-        show();
-        dirtyAdjust = true;
-        requestRender();
-      });
-      input.addEventListener('change', commit);
-      input.addEventListener('dblclick', () => {
-        input.value = 0;
-        state.adjust[a.key] = 0;
-        show();
-        dirtyAdjust = true;
-        requestRender();
-        commit();
-      });
-      input._show = show;
-      el.sliders.append(field);
+    for (const group of ADJUST_GROUPS) {
+      const box = document.createElement('div');
+      box.className = 'slider-group';
+      const title = document.createElement('h3');
+      title.className = 'group-title';
+      title.textContent = group.title;
+      box.append(title);
+      for (const a of group.items) {
+        const field = document.createElement('div');
+        field.className = 'field';
+        field.innerHTML = `
+          <div class="field-head">
+            <label for="adj-${a.key}">${a.label}</label>
+            <output id="adj-${a.key}-value" for="adj-${a.key}">0</output>
+          </div>
+          <input type="range" id="adj-${a.key}" min="${a.min}" max="${a.max}" step="1" value="0">`;
+        const input = field.querySelector('input');
+        const output = field.querySelector('output');
+        const show = () => {
+          const v = +input.value;
+          output.textContent = a.min < 0 ? formatSigned(v) : String(v);
+          setFill(input);
+        };
+        input.addEventListener('input', () => {
+          state.adjust[a.key] = +input.value;
+          show();
+          dirtyAdjust = true;
+          requestRender();
+        });
+        input.addEventListener('change', commit);
+        input.addEventListener('dblclick', () => {
+          input.value = 0;
+          state.adjust[a.key] = 0;
+          show();
+          dirtyAdjust = true;
+          requestRender();
+          commit();
+        });
+        input._show = show;
+        box.append(field);
+      }
+      el.sliders.append(box);
     }
+  }
+
+  // Автоулучшение: смотрим на гистограмму яркости и подбираем ползунки
+  function autoEnhance() {
+    if (!original) return;
+    ensureBase();
+    const d = baseData.data;
+    const hist = new Uint32Array(256);
+    let count = 0;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 16) {
+      const l = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
+      hist[l]++;
+      sum += l;
+      count++;
+    }
+    const mean = sum / count;
+    const pct = (q) => {
+      let acc = 0;
+      for (let v = 0; v < 256; v++) {
+        acc += hist[v];
+        if (acc >= q * count) return v;
+      }
+      return 255;
+    };
+    const lo = pct(0.005);
+    const hi = pct(0.995);
+    const spread = Math.max(40, hi - lo);
+    const a = state.adjust;
+    a.contrast = Math.round(clamp(((255 / spread - 1) / 1.2) * 100 * 0.7, 0, 35));
+    a.exposure = Math.round(clamp((120 - mean) / 2.4, -25, 35));
+    a.shadows = Math.round(clamp((115 - mean) * 0.35 + (lo > 30 ? 0 : 8), 0, 35));
+    a.highlights = hi > 245 ? -15 : 0;
+    a.saturation = 12;
+    a.sharpness = 20;
+    syncSliders();
+    dirtyAdjust = true;
+    requestRender();
+    commit();
+    toast('Готово. Результат можно подправить ползунками.');
   }
 
   /* ---------- Синхронизация интерфейса с состоянием ---------- */
 
   function syncFilters() {
-    $$('.frame').forEach((btn) => {
-      btn.setAttribute('aria-selected', String(btn.dataset.filter === state.filter));
-    });
+    $$('.frame').forEach((btn) => btn.setAttribute('aria-selected', String(btn.dataset.filter === state.filter)));
     el.strengthField.hidden = state.filter === 'none';
     el.strength.value = state.strength;
     el.strengthValue.textContent = state.strength;
@@ -875,21 +1401,58 @@
   function syncSliders() {
     for (const a of ADJUSTMENTS) {
       const input = $(`#adj-${a.key}`);
-      input.value = state.adjust[a.key];
+      input.value = state.adjust[a.key] || 0;
       input._show();
     }
   }
 
-  function syncRatios() {
-    el.ratios.forEach((chip) => chip.setAttribute('aria-checked', String(chip.dataset.ratio === cropRatio)));
+  function syncCrop() {
+    setRadio(el.ratios, 'ratio', cropRatio);
     el.cropUI.classList.toggle('is-locked', cropRatio !== 'free');
+    el.angle.value = state.angle;
+    el.angleValue.textContent = formatDegrees(state.angle);
+    setFill(el.angle);
+  }
+
+  function syncAI() {
+    setRadio(el.aiMode, 'ai', aiTool);
+    el.aiErase.hidden = aiTool !== 'erase';
+    el.aiBg.hidden = aiTool !== 'bg';
+    const hasMask = state.bg.mask >= 0 && !!maskList[state.bg.mask];
+    el.btnBgRun.hidden = hasMask;
+    el.bgHint.hidden = hasMask;
+    el.bgOptions.hidden = !hasMask;
+    setRadio(el.bgMode, 'bg', state.bg.mode);
+    el.bgColorField.hidden = state.bg.mode !== 'color';
+    el.bgBlurField.hidden = state.bg.mode !== 'blur';
+    el.bgBlur.value = state.bg.blur;
+    el.bgBlurValue.textContent = state.bg.blur;
+    setFill(el.bgBlur);
+    if (el.bgSwatches._sync) el.bgSwatches._sync(state.bg.color);
+    el.btnEraseRun.disabled = aiBusy;
+    el.btnBgRun.disabled = aiBusy;
+    el.eraseSizeValue.textContent = el.eraseSize.value;
+    setFill(el.eraseSize);
+  }
+
+  function syncFrame() {
+    setRadio(el.frameStyle, 'frame', state.frame.style);
+    el.frameWidth.value = state.frame.width;
+    el.frameWidthValue.textContent = state.frame.width;
+    setFill(el.frameWidth);
+    el.frameRadius.value = state.frame.radius;
+    el.frameRadiusValue.textContent = state.frame.radius;
+    setFill(el.frameRadius);
+    if (el.frameSwatches._sync) el.frameSwatches._sync(state.frame.color);
   }
 
   function syncUI() {
     syncFilters();
     syncSliders();
-    syncRatios();
-    syncTextEditor();
+    syncCrop();
+    syncAI();
+    syncItemEditors();
+    syncFrame();
   }
 
   /* ---------- Вкладки ---------- */
@@ -898,15 +1461,25 @@
     if (name === activeTab && !(name === 'crop' && mode !== 'crop')) return;
     const prev = activeTab;
     if (prev === 'crop' && name !== 'crop') applyCrop(false);
-    if (prev === 'text' && name !== 'text') selectText(null);
+    if ((prev === 'text' || prev === 'stickers') && name !== 'text' && name !== 'stickers') selectItem(null);
+    const sel = selectedItem();
+    if (sel && ((name === 'text' && sel.kind !== 'text') || (name === 'stickers' && sel.kind !== 'sticker'))) selectItem(null);
 
     activeTab = name;
     el.tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
     el.panes.forEach((p) => { p.hidden = p.dataset.pane !== name; });
+    const tab = el.tabs.find((t) => t.dataset.tab === name);
+    if (tab && tab.scrollIntoView) tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
+    brushHover = null;
+    updatePaintingCursor();
     if (name === 'crop') enterCrop();
-    if (name === 'filters' && thumbsDirty) requestRender();
+    syncItemEditors();
     requestRender();
+  }
+
+  function updatePaintingCursor() {
+    el.app.classList.toggle('is-painting', activeTab === 'draw' || isErasing());
   }
 
   /* ---------- Обрезка ---------- */
@@ -916,12 +1489,12 @@
   }
 
   function enterCrop() {
-    if (!source || mode === 'crop') return;
+    if (!original || mode === 'crop') return;
     mode = 'crop';
     pendingCrop = { ...state.crop };
     dirtyBase = true;
     el.cropUI.hidden = false;
-    syncRatios();
+    syncCrop();
     requestRender();
   }
 
@@ -936,7 +1509,6 @@
     const changed = cropChanged(pendingCrop, state.crop);
     if (changed) state.crop = { ...pendingCrop };
     dirtyBase = true;
-    thumbsDirty = true;
     if (changed) commit();
     if (goToFilters) {
       if (changed) toast('Обрезка применена');
@@ -965,7 +1537,7 @@
 
   function setRatio(name) {
     cropRatio = name;
-    syncRatios();
+    syncCrop();
     const a = normalizedRatio();
     if (a) {
       const cx = pendingCrop.x + pendingCrop.w / 2;
@@ -973,12 +1545,7 @@
       let w = Math.min(1, a);
       let h = w / a;
       if (h > 1) { h = 1; w = a; }
-      pendingCrop = {
-        x: clamp(cx - w / 2, 0, 1 - w),
-        y: clamp(cy - h / 2, 0, 1 - h),
-        w,
-        h,
-      };
+      pendingCrop = { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h };
     }
     positionCropUI();
   }
@@ -1012,12 +1579,7 @@
     const minH = Math.min(1, 40 / d.dispH);
 
     if (d.handle === 'move') {
-      pendingCrop = {
-        x: clamp(s.x + dx, 0, 1 - s.w),
-        y: clamp(s.y + dy, 0, 1 - s.h),
-        w: s.w,
-        h: s.h,
-      };
+      pendingCrop = { x: clamp(s.x + dx, 0, 1 - s.w), y: clamp(s.y + dy, 0, 1 - s.h), w: s.w, h: s.h };
       positionCropUI();
       return;
     }
@@ -1056,43 +1618,82 @@
     cropDrag = null;
   }
 
-  /* ---------- Поворот и отражение ---------- */
+  /* ---------- Поворот, отражение и наклон ---------- */
 
   function applyOrientation(opName) {
-    if (!source) return;
+    if (!original) return;
     state.m = multiply(OPS[opName], state.m);
     state.crop = transformRect(state.crop, opName);
+    if (opName === 'flipH' || opName === 'flipV') state.angle = -state.angle;
     if (mode === 'crop') {
       pendingCrop = transformRect(pendingCrop, opName);
       if (cropRatio !== 'free') setRatio(cropRatio);
     }
+    syncCrop();
     dirtyBase = true;
-    thumbsDirty = true;
     commit();
     requestRender();
   }
 
-  /* ---------- Работа с надписями ---------- */
+  /* ---------- Надписи и стикеры ---------- */
 
-  function selectedText() {
-    return state.texts.find((t) => t.id === selectedTextId) || null;
+  function selectedItem() {
+    return state.items.find((t) => t.id === selectedId) || null;
   }
 
-  function selectText(id) {
-    if (selectedTextId && selectedTextId !== id) {
+  function selectItem(id) {
+    if (selectedId && selectedId !== id) {
       // Пустые надписи удаляем, чтобы они не мешали
-      const prev = selectedText();
-      if (prev && !prev.text.trim()) {
-        state.texts = state.texts.filter((t) => t.id !== prev.id);
+      const prev = selectedItem();
+      if (prev && prev.kind === 'text' && !prev.text.trim()) {
+        state.items = state.items.filter((t) => t.id !== prev.id);
         commit();
       }
     }
-    selectedTextId = id;
-    syncTextEditor();
+    selectedId = id;
+    syncItemEditors();
     requestRender();
   }
 
-  function buildTextControls() {
+  function buildSwatches(container, colors, onPick, onCustomInput) {
+    container.innerHTML = '';
+    for (const c of colors) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'swatch';
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', 'false');
+      b.setAttribute('aria-label', c.name);
+      b.title = c.name;
+      b.dataset.color = c.value;
+      b.style.setProperty('--c', c.value);
+      b.addEventListener('click', () => onPick(c.value));
+      container.append(b);
+    }
+    const custom = document.createElement('label');
+    custom.className = 'swatch swatch-custom';
+    custom.title = 'Свой цвет';
+    custom.setAttribute('role', 'radio');
+    custom.setAttribute('aria-checked', 'false');
+    custom.innerHTML = '<input type="color" aria-label="Выбрать свой цвет" value="#ffffff">';
+    const picker = custom.querySelector('input');
+    picker.addEventListener('input', () => onCustomInput(picker.value));
+    picker.addEventListener('change', () => onPick(picker.value));
+    container.append(custom);
+
+    container._sync = (value) => {
+      let matched = false;
+      container.querySelectorAll('.swatch[data-color]').forEach((b) => {
+        const on = b.dataset.color.toLowerCase() === String(value).toLowerCase();
+        if (on) matched = true;
+        b.setAttribute('aria-checked', String(on));
+      });
+      custom.setAttribute('aria-checked', String(!matched));
+      if (/^#[0-9a-f]{6}$/i.test(value)) picker.value = value;
+    };
+  }
+
+  function buildItemControls() {
     el.fontGrid.innerHTML = '';
     for (const f of FONTS) {
       const b = document.createElement('button');
@@ -1104,99 +1705,142 @@
       b.textContent = f.name;
       b.style.fontFamily = `"${f.family}", sans-serif`;
       b.style.fontWeight = f.weight;
-      b.addEventListener('click', () => updateText({ font: f.id }, true));
+      b.addEventListener('click', () => updateItem({ font: f.id }, true));
       el.fontGrid.append(b);
     }
 
-    el.swatches.innerHTML = '';
-    for (const c of COLORS) {
+    buildSwatches(el.swatches, COLORS,
+      (v) => updateItem({ color: v }, true),
+      (v) => updateItem({ color: v }, false));
+
+    el.stickerGrid.innerHTML = '';
+    for (const s of STICKERS) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'swatch';
-      b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', 'false');
-      b.setAttribute('aria-label', c.name);
-      b.title = c.name;
-      b.dataset.color = c.value;
-      b.style.setProperty('--c', c.value);
-      b.addEventListener('click', () => updateText({ color: c.value }, true));
-      el.swatches.append(b);
+      b.className = 'sticker-btn';
+      b.textContent = s;
+      b.setAttribute('aria-label', 'Добавить стикер ' + s);
+      b.addEventListener('click', () => addSticker(s));
+      el.stickerGrid.append(b);
     }
-    const custom = document.createElement('label');
-    custom.className = 'swatch swatch-custom';
-    custom.title = 'Свой цвет';
-    custom.setAttribute('role', 'radio');
-    custom.setAttribute('aria-checked', 'false');
-    custom.innerHTML = '<input type="color" aria-label="Выбрать свой цвет" value="#ffffff">';
-    const picker = custom.querySelector('input');
-    picker.addEventListener('input', () => updateText({ color: picker.value }, false));
-    picker.addEventListener('change', commit);
-    el.swatches.append(custom);
+
+    buildSwatches(el.drawSwatches, COLORS, (v) => {
+      drawColor = v;
+      el.drawSwatches._sync(v);
+    }, (v) => { drawColor = v; });
+    el.drawSwatches._sync(drawColor);
+
+    buildSwatches(el.bgSwatches, COLORS, (v) => {
+      state.bg.color = v;
+      dirtyAdjust = true;
+      syncAI();
+      requestRender();
+      commit();
+    }, (v) => {
+      state.bg.color = v;
+      dirtyAdjust = true;
+      requestRender();
+    });
+
+    buildSwatches(el.frameSwatches, FRAME_COLORS, (v) => {
+      state.frame.color = v;
+      syncFrame();
+      requestRender();
+      commit();
+    }, (v) => {
+      state.frame.color = v;
+      requestRender();
+    });
   }
 
-  function updateText(changes, save) {
-    const t = selectedText();
+  function updateItem(changes, save) {
+    const t = selectedItem();
     if (!t) return;
     Object.assign(t, changes);
     if (changes.font) ensureFont(fontOf(t), t.text);
-    syncTextEditor();
+    syncItemEditors();
     requestRender();
     if (save) commit();
   }
 
-  function syncTextEditor() {
-    const t = selectedText();
-    el.textEditor.hidden = !t;
-    el.textHint.hidden = !!t;
-    if (!t) return;
-    if (document.activeElement !== el.textInput) el.textInput.value = t.text;
-    $$('.font-chip').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.font === t.font)));
-    el.textSize.value = t.size;
-    el.textSizeValue.textContent = t.size;
-    setFill(el.textSize);
-    let matched = false;
-    $$('#swatches .swatch[data-color]').forEach((b) => {
-      const on = b.dataset.color.toLowerCase() === t.color.toLowerCase();
-      if (on) matched = true;
-      b.setAttribute('aria-checked', String(on));
-    });
-    const custom = $('.swatch-custom');
-    custom.setAttribute('aria-checked', String(!matched));
-    custom.querySelector('input').value = t.color;
-    el.textStyle.forEach((b) => b.setAttribute('aria-checked', String(b.dataset.style === t.style)));
+  function syncItemEditors() {
+    const t = selectedItem();
+    const isText = t && t.kind === 'text';
+    const isSticker = t && t.kind === 'sticker';
+    el.textEditor.hidden = !isText;
+    el.textHint.hidden = !!isText;
+    el.stickerEditor.hidden = !isSticker;
+    el.stickerHint.hidden = !!isSticker;
+
+    if (isText) {
+      if (document.activeElement !== el.textInput) el.textInput.value = t.text;
+      $$('.font-chip').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.font === t.font)));
+      el.textSize.value = t.size;
+      el.textSizeValue.textContent = t.size;
+      setFill(el.textSize);
+      el.textRotation.value = t.rotation || 0;
+      el.textRotationValue.textContent = formatDegrees(t.rotation || 0);
+      setFill(el.textRotation);
+      el.swatches._sync(t.color);
+      setRadio(el.textStyle, 'style', t.style);
+    }
+    if (isSticker) {
+      el.stickerSize.value = t.size;
+      el.stickerSizeValue.textContent = t.size;
+      setFill(el.stickerSize);
+      el.stickerRotation.value = t.rotation || 0;
+      el.stickerRotationValue.textContent = formatDegrees(t.rotation || 0);
+      setFill(el.stickerRotation);
+    }
+  }
+
+  function freeSpot() {
+    let y = 0.5;
+    while (state.items.some((t) => Math.abs(t.x - 0.5) < 0.01 && Math.abs(t.y - y) < 0.01) && y < 0.9) y += 0.1;
+    return y;
   }
 
   function addText() {
-    if (!source) return;
-    let y = 0.5;
-    while (state.texts.some((t) => Math.abs(t.x - 0.5) < 0.01 && Math.abs(t.y - y) < 0.01) && y < 0.9) y += 0.1;
+    if (!original) return;
     const t = {
       id: uid(),
+      kind: 'text',
       text: 'Ваш текст',
       x: 0.5,
-      y,
+      y: freeSpot(),
       size: 40,
+      rotation: 0,
       font: 'montserrat',
       color: '#ffffff',
       style: 'outline',
     };
-    state.texts.push(t);
+    state.items.push(t);
     ensureFont(fontOf(t), t.text);
-    selectText(t.id);
+    selectItem(t.id);
     commit();
     el.textInput.value = t.text;
     el.textInput.focus();
     el.textInput.select();
   }
 
-  function deleteSelectedText() {
-    if (!selectedTextId) return;
-    state.texts = state.texts.filter((t) => t.id !== selectedTextId);
-    selectedTextId = null;
-    syncTextEditor();
+  function addSticker(emoji) {
+    if (!original) return;
+    const t = { id: uid(), kind: 'sticker', text: emoji, x: 0.5, y: freeSpot(), size: 40, rotation: 0 };
+    state.items.push(t);
+    selectItem(t.id);
+    commit();
+  }
+
+  function deleteSelectedItem() {
+    if (!selectedId) return;
+    state.items = state.items.filter((t) => t.id !== selectedId);
+    selectedId = null;
+    syncItemEditors();
     requestRender();
     commit();
   }
+
+  /* ---------- Указатель на фото: перетаскивание, рисование, ластик ---------- */
 
   function canvasPoint(e) {
     const rect = el.canvas.getBoundingClientRect();
@@ -1206,52 +1850,455 @@
     };
   }
 
-  function hitText(p) {
-    for (let i = state.texts.length - 1; i >= 0; i--) {
-      const t = state.texts[i];
-      const b = textBoxes.get(t.id);
-      if (b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return t;
+  function hitItem(p) {
+    const lx0 = p.x - layout.ox;
+    const ly0 = p.y - layout.oy;
+    for (let i = state.items.length - 1; i >= 0; i--) {
+      const t = state.items[i];
+      const b = itemBoxes.get(t.id);
+      if (!b) continue;
+      const dx = lx0 - b.cx;
+      const dy = ly0 - b.cy;
+      const lx = dx * Math.cos(-b.rot) - dy * Math.sin(-b.rot);
+      const ly = dx * Math.sin(-b.rot) + dy * Math.cos(-b.rot);
+      if (Math.abs(lx) <= b.hw && Math.abs(ly) <= b.hh) return t;
     }
     return null;
   }
 
-  let textDrag = null;
+  let pointer = null;
+
+  function eraseRadius() {
+    const w = layout.w;
+    const h = layout.h;
+    return Math.min(w, h) * (0.008 + (+el.eraseSize.value / 100) * 0.08);
+  }
 
   function onCanvasPointerDown(e) {
-    if (!source || mode === 'crop' || comparing) return;
+    if (!original || mode === 'crop' || comparing || aiBusy) return;
     const p = canvasPoint(e);
-    const t = hitText(p);
+
+    if (isErasing()) {
+      e.preventDefault();
+      const s = { r: eraseRadius(), points: [[p.x, p.y]] };
+      eraseStrokes.push(s);
+      pointer = { type: 'erase', stroke: s };
+      el.canvas.setPointerCapture(e.pointerId);
+      requestRender();
+      return;
+    }
+
+    if (activeTab === 'draw') {
+      e.preventDefault();
+      const nx = (p.x - layout.ox) / layout.w;
+      const ny = (p.y - layout.oy) / layout.h;
+      liveStroke = { color: drawColor, size: +el.drawSize.value, points: [[nx, ny]] };
+      pointer = { type: 'draw' };
+      el.canvas.setPointerCapture(e.pointerId);
+      requestRender();
+      return;
+    }
+
+    const t = hitItem(p);
     if (t) {
       e.preventDefault();
-      if (activeTab !== 'text') setTab('text');
-      selectText(t.id);
-      textDrag = { id: t.id, sx: p.x, sy: p.y, ox: t.x, oy: t.y, moved: false };
+      const tab = t.kind === 'sticker' ? 'stickers' : 'text';
+      if (activeTab !== tab) setTab(tab);
+      selectItem(t.id);
+      pointer = { type: 'item', id: t.id, sx: p.x, sy: p.y, ox: t.x, oy: t.y, moved: false };
       el.canvas.setPointerCapture(e.pointerId);
       el.app.classList.add('is-dragging-text');
-    } else if (selectedTextId) {
-      selectText(null);
+    } else if (selectedId) {
+      selectItem(null);
     }
   }
 
   function onCanvasPointerMove(e) {
-    if (!source || mode === 'crop') return;
+    if (!original || mode === 'crop') return;
     const p = canvasPoint(e);
-    if (textDrag) {
-      const t = state.texts.find((x) => x.id === textDrag.id);
+
+    if (pointer && pointer.type === 'erase') {
+      const pts = pointer.stroke.points;
+      const last = pts[pts.length - 1];
+      if (Math.hypot(p.x - last[0], p.y - last[1]) > 2) pts.push([p.x, p.y]);
+      brushHover = p;
+      requestRender();
+      return;
+    }
+    if (pointer && pointer.type === 'draw') {
+      const nx = (p.x - layout.ox) / layout.w;
+      const ny = (p.y - layout.oy) / layout.h;
+      const pts = liveStroke.points;
+      const last = pts[pts.length - 1];
+      if (Math.hypot((nx - last[0]) * layout.w, (ny - last[1]) * layout.h) > 1.5) pts.push([nx, ny]);
+      brushHover = p;
+      requestRender();
+      return;
+    }
+    if (pointer && pointer.type === 'item') {
+      const t = state.items.find((x) => x.id === pointer.id);
       if (!t) return;
-      t.x = clamp(textDrag.ox + (p.x - textDrag.sx) / el.canvas.width, 0, 1);
-      t.y = clamp(textDrag.oy + (p.y - textDrag.sy) / el.canvas.height, 0, 1);
-      textDrag.moved = true;
+      t.x = clamp(pointer.ox + (p.x - pointer.sx) / layout.w, 0, 1);
+      t.y = clamp(pointer.oy + (p.y - pointer.sy) / layout.h, 0, 1);
+      pointer.moved = true;
+      requestRender();
+      return;
+    }
+
+    if (e.pointerType === 'mouse' && (activeTab === 'draw' || isErasing())) {
+      brushHover = p;
       requestRender();
     } else if (e.pointerType === 'mouse') {
-      el.app.classList.toggle('is-over-text', !!hitText(p));
+      el.app.classList.toggle('is-over-text', !!hitItem(p));
     }
   }
 
-  function onCanvasPointerUp() {
-    if (textDrag && textDrag.moved) commit();
-    textDrag = null;
+  function onCanvasPointerUp(e) {
+    if (e && e.pointerType !== 'mouse' && brushHover) {
+      brushHover = null;
+      requestRender();
+    }
+    if (pointer && pointer.type === 'item' && pointer.moved) commit();
+    if (pointer && pointer.type === 'draw' && liveStroke) {
+      state.strokes.push(liveStroke);
+      liveStroke = null;
+      commit();
+      requestRender();
+    }
+    pointer = null;
     el.app.classList.remove('is-dragging-text');
+  }
+
+  function drawEraseOverlay() {
+    if (!eraseStrokes.length && !brushHover) return;
+    const w = el.canvas.width;
+    const h = el.canvas.height;
+    if (eraseStrokes.length) {
+      const layer = makeCanvas(w, h);
+      const lctx = layer.getContext('2d');
+      paintEraseStrokes(lctx, '#ff3b3b');
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(layer, 0, 0);
+      ctx.restore();
+    }
+    if (brushHover) drawBrushCursor(brushHover.x, brushHover.y, eraseRadius());
+  }
+
+  function paintEraseStrokes(context, color) {
+    context.save();
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    for (const s of eraseStrokes) {
+      if (s.points.length === 1) {
+        context.beginPath();
+        context.arc(s.points[0][0], s.points[0][1], s.r, 0, Math.PI * 2);
+        context.fill();
+      } else {
+        context.lineWidth = s.r * 2;
+        context.beginPath();
+        context.moveTo(s.points[0][0], s.points[0][1]);
+        for (const pt of s.points.slice(1)) context.lineTo(pt[0], pt[1]);
+        context.stroke();
+      }
+    }
+    context.restore();
+  }
+
+  /* ---------- ИИ: загрузка модели ---------- */
+
+  let ortPromise = null;
+  const sessions = {};
+
+  function loadOrt() {
+    if (ortPromise) return ortPromise;
+    ortPromise = new Promise((resolve, reject) => {
+      if (window.ort) { resolve(window.ort); return; }
+      const s = document.createElement('script');
+      s.src = ORT_BASE + 'ort.wasm.min.js';
+      s.crossOrigin = 'anonymous';
+      s.onload = () => {
+        const ort = window.ort;
+        ort.env.wasm.wasmPaths = ORT_BASE;
+        ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+        ort.env.wasm.proxy = true; // считаем в фоне, чтобы страница не зависала
+        resolve(ort);
+      };
+      s.onerror = () => { ortPromise = null; reject(new Error('ort')); };
+      document.head.append(s);
+    });
+    return ortPromise;
+  }
+
+  async function fetchModel(url, sizeMb, onProgress) {
+    let cache = null;
+    try {
+      if ('caches' in window) {
+        cache = await caches.open('kadr-models-v1');
+        const hit = await cache.match(url);
+        if (hit) return await hit.arrayBuffer();
+      }
+    } catch (e) { cache = null; }
+
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('model ' + resp.status);
+    const total = +resp.headers.get('content-length') || sizeMb * 1e6;
+    let buf;
+    if (resp.body && resp.body.getReader) {
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        onProgress(Math.min(1, loaded / total));
+      }
+      const all = new Uint8Array(loaded);
+      let pos = 0;
+      for (const ch of chunks) { all.set(ch, pos); pos += ch.length; }
+      buf = all.buffer;
+    } else {
+      buf = await resp.arrayBuffer();
+    }
+    if (cache) {
+      try { await cache.put(url, new Response(buf.slice(0))); } catch (e) { /* место закончилось — не страшно */ }
+    }
+    return buf;
+  }
+
+  async function getSession(key) {
+    if (sessions[key]) return sessions[key];
+    const info = MODELS[key];
+    setAIStatus('Загружаем ИИ…', null);
+    const ort = await loadOrt();
+    const buf = await fetchModel(info.url, info.sizeMb, (f) => {
+      setAIStatus(`Загружаем ИИ-модель: ${Math.round(f * 100)} %`, f);
+    });
+    setAIStatus('Готовим ИИ к работе…', null);
+    try {
+      sessions[key] = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'] });
+    } catch (e) {
+      // Если фоновый режим не сработал, пробуем обычный
+      if (ort.env.wasm.proxy) {
+        ort.env.wasm.proxy = false;
+        sessions[key] = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'] });
+      } else {
+        throw e;
+      }
+    }
+    return sessions[key];
+  }
+
+  function setAIStatus(text, fraction) {
+    el.aiStatus.hidden = !text;
+    if (!text) return;
+    el.aiStatusText.textContent = text;
+    const bar = el.aiProgress.parentElement;
+    bar.classList.toggle('is-indeterminate', fraction == null);
+    el.aiProgress.style.width = fraction == null ? '' : Math.round(fraction * 100) + '%';
+  }
+
+  function setBusy(busy, label) {
+    aiBusy = busy;
+    el.badge.hidden = !busy;
+    el.badge.classList.toggle('is-busy', busy);
+    el.badge.textContent = busy ? label : '';
+    el.btnSave.disabled = busy;
+    syncAI();
+    if (!busy) setAIStatus(null);
+  }
+
+  function aiError(e) {
+    console.error(e);
+    const msg = String(e && e.message || e);
+    if (/ort|fetch|model|network|Failed/i.test(msg)) {
+      toast('Не получилось загрузить ИИ-модель. Проверьте интернет и попробуйте ещё раз.', true);
+    } else if (/memory|allocation|RangeError/i.test(msg)) {
+      toast('Не хватило памяти устройства. Попробуйте фото поменьше.', true);
+    } else {
+      toast('ИИ не справился с этим фото. Попробуйте ещё раз.', true);
+    }
+  }
+
+  /* ---------- ИИ-ластик ---------- */
+
+  async function runEraser() {
+    if (aiBusy || !original) return;
+    if (!eraseStrokes.length) {
+      toast('Сначала закрасьте то, что нужно убрать.');
+      return;
+    }
+    setBusy(true, 'ИИ стирает…');
+    try {
+      const session = await getSession('eraser');
+      setAIStatus('ИИ дорисовывает фон…', null);
+      await nextFrame();
+
+      const src = currentSource();
+      // Из координат экрана в координаты исходного фото
+      const toBase = mMul(frameMatrix(state, preview.width, preview.height, 1, true), mS(preview.width / srcW));
+      const toSrc = mInv(toBase);
+      const k = Math.sqrt(Math.abs(toSrc[0] * toSrc[3] - toSrc[1] * toSrc[2]));
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const s of eraseStrokes) {
+        const r = s.r * k;
+        for (const pt of s.points) {
+          const [x, y] = mApply(toSrc, pt[0], pt[1]);
+          minX = Math.min(minX, x - r); minY = Math.min(minY, y - r);
+          maxX = Math.max(maxX, x + r); maxY = Math.max(maxY, y + r);
+        }
+      }
+      const margin = Math.max(maxX - minX, maxY - minY) * 0.6 + 32;
+      const R = {
+        x: Math.max(0, Math.floor(minX - margin)),
+        y: Math.max(0, Math.floor(minY - margin)),
+      };
+      R.w = Math.min(srcW, Math.ceil(maxX + margin)) - R.x;
+      R.h = Math.min(srcH, Math.ceil(maxY + margin)) - R.y;
+      if (R.w < 8 || R.h < 8) throw new Error('empty');
+
+      const f = Math.min(1, 1024 / Math.max(R.w, R.h));
+      const iw = Math.max(8, Math.round(R.w * f));
+      const ih = Math.max(8, Math.round(R.h * f));
+
+      const imgC = makeCanvas(iw, ih);
+      const ictx = imgC.getContext('2d', { willReadFrequently: true });
+      ictx.imageSmoothingQuality = 'high';
+      ictx.drawImage(src, R.x, R.y, R.w, R.h, 0, 0, iw, ih);
+
+      const maskC = makeCanvas(iw, ih);
+      const mctx = maskC.getContext('2d', { willReadFrequently: true });
+      const M = mChain(mS(f), mT(-R.x, -R.y), toSrc);
+      mctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      paintEraseStrokes(mctx, '#000');
+      mctx.setTransform(1, 0, 0, 1, 0, 0);
+
+      const id = ictx.getImageData(0, 0, iw, ih).data;
+      const md = mctx.getImageData(0, 0, iw, ih).data;
+      const n = iw * ih;
+      const imgT = new Uint8Array(n * 3);
+      const maskT = new Uint8Array(n);
+      for (let i = 0, p = 0; i < n; i++, p += 4) {
+        imgT[i] = id[p];
+        imgT[i + n] = id[p + 1];
+        imgT[i + 2 * n] = id[p + 2];
+        maskT[i] = md[p + 3] > 20 ? 0 : 255; // 0 — стереть, 255 — оставить
+      }
+
+      const ort = window.ort;
+      const out = await session.run({
+        image: new ort.Tensor('uint8', imgT, [1, 3, ih, iw]),
+        mask: new ort.Tensor('uint8', maskT, [1, 1, ih, iw]),
+      });
+      const res = out[session.outputNames[0]];
+      const rd = res.data;
+      const [, , oh, ow] = res.dims;
+      const outImg = new ImageData(ow, oh);
+      const on = ow * oh;
+      for (let i = 0, p = 0; i < on; i++, p += 4) {
+        outImg.data[p] = rd[i];
+        outImg.data[p + 1] = rd[i + on];
+        outImg.data[p + 2] = rd[i + 2 * on];
+        outImg.data[p + 3] = 255;
+      }
+      const outC = makeCanvas(ow, oh);
+      outC.getContext('2d').putImageData(outImg, 0, 0);
+
+      // Кладём результат только туда, где закрашено, с мягким краем
+      const layer = makeCanvas(R.w, R.h);
+      const lctx = layer.getContext('2d');
+      lctx.imageSmoothingQuality = 'high';
+      lctx.drawImage(outC, 0, 0, R.w, R.h);
+      lctx.globalCompositeOperation = 'destination-in';
+      lctx.drawImage(maskC, 0, 0, R.w, R.h);
+
+      const patch = makeCanvas(R.w, R.h);
+      const pctx = patch.getContext('2d');
+      pctx.drawImage(src, R.x, R.y, R.w, R.h, 0, 0, R.w, R.h);
+      pctx.drawImage(layer, 0, 0);
+
+      patchList = patchList.slice(0, state.patches);
+      patchList.push({ x: R.x, y: R.y, canvas: patch });
+      if (!workSource) {
+        workSource = makeCanvas(srcW, srcH);
+        workSource.getContext('2d').drawImage(original, 0, 0);
+      }
+      workSource.getContext('2d').drawImage(patch, R.x, R.y);
+      state.patches++;
+      appliedPatches = state.patches;
+      preview = makePreview(workSource);
+      eraseStrokes = [];
+      dirtyBase = true;
+      commit();
+      requestRender();
+      toast('Готово! Если что-то осталось, закрасьте это ещё раз.');
+    } catch (e) {
+      if (String(e.message) === 'empty') toast('Закрашенная область слишком маленькая.', true);
+      else aiError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ---------- ИИ: удаление фона ---------- */
+
+  async function runBackground() {
+    if (aiBusy || !original) return;
+    setBusy(true, 'ИИ ищет главное на фото…');
+    try {
+      const session = await getSession('background');
+      setAIStatus('ИИ отделяет фон… Это может занять до 30 секунд.', null);
+      await nextFrame();
+
+      const S = 1024;
+      const inC = makeCanvas(S, S);
+      const ictx = inC.getContext('2d', { willReadFrequently: true });
+      ictx.imageSmoothingQuality = 'high';
+      ictx.drawImage(currentSource(), 0, 0, S, S);
+      const d = ictx.getImageData(0, 0, S, S).data;
+      const n = S * S;
+      const input = new Float32Array(n * 3);
+      for (let i = 0, p = 0; i < n; i++, p += 4) {
+        input[i] = d[p] / 255;
+        input[i + n] = d[p + 1] / 255;
+        input[i + 2 * n] = d[p + 2] / 255;
+      }
+      const ort = window.ort;
+      const out = await session.run({ [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, S, S]) });
+      const alpha = out[session.outputNames[0]].data;
+
+      const small = new ImageData(S, S);
+      for (let i = 0, p = 0; i < n; i++, p += 4) {
+        small.data[p] = 255;
+        small.data[p + 1] = 255;
+        small.data[p + 2] = 255;
+        small.data[p + 3] = clamp(alpha[i], 0, 1) * 255;
+      }
+      const sc = makeCanvas(S, S);
+      sc.getContext('2d').putImageData(small, 0, 0);
+      const ms = Math.min(1, MASK_MAX / Math.max(srcW, srcH));
+      const mask = makeCanvas(srcW * ms, srcH * ms);
+      const mkctx = mask.getContext('2d');
+      mkctx.imageSmoothingQuality = 'high';
+      mkctx.drawImage(sc, 0, 0, mask.width, mask.height);
+
+      maskList.push(mask);
+      state.bg = { ...state.bg, mask: maskList.length - 1, mode: 'transparent' };
+      dirtyBase = true;
+      commit();
+      syncAI();
+      requestRender();
+      toast('Фон удалён. Можно выбрать новый цвет или размытие.');
+    } catch (e) {
+      aiError(e);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /* ---------- Сохранение ---------- */
@@ -1263,20 +2310,29 @@
   let blobJob = 0;
 
   async function renderFullSize() {
-    await Promise.all(state.texts.map((t) =>
+    await Promise.all(state.items.filter((t) => t.kind === 'text').map((t) =>
       document.fonts.load(fontString(fontOf(t), 40), t.text || 'А').catch(() => {})));
 
-    const sw = source.naturalWidth;
-    const sh = source.naturalHeight;
-    const [W, H] = orientedSize(sw, sh, state.m);
+    const src = currentSource();
+    const [W, H] = orientedSize(srcW, srcH, state.m);
     const cw = state.crop.w * W;
     const ch = state.crop.h * H;
     const scale = Math.min(1, Math.sqrt(EXPORT_MAX_PIXELS / (cw * ch)));
-    const out = makeCanvas(cw * scale, ch * scale);
-    const octx = out.getContext('2d', { willReadFrequently: true });
-    drawTransformed(octx, source, sw, sh, state.m, state.crop.x * W, state.crop.y * H, scale);
-    applyLook(out, paramsFor(state.filter, state.strength, state.adjust));
-    drawTexts(octx, out.width, out.height, state.texts, { export: true });
+    const [pw, ph] = frameSize(state, srcW, srcH, scale, true);
+    const photo = makeCanvas(pw, ph);
+    const pctx = photo.getContext('2d', { willReadFrequently: true });
+    drawWithMatrix(pctx, src, frameMatrix(state, srcW, srcH, scale, true));
+
+    let mask = null;
+    if (bgActive(state)) {
+      const mk = maskList[state.bg.mask];
+      mask = makeCanvas(pw, ph);
+      drawWithMatrix(mask.getContext('2d'), mk, frameMatrix(state, mk.width, mk.height, (scale * srcW) / mk.width, true));
+    }
+    applyLook(photo, paramsFor(state.filter, state.strength, state.adjust), mask, state.bg);
+
+    const out = makeCanvas(1, 1);
+    composeFinal(out, photo, state, { export: true });
     return out;
   }
 
@@ -1297,8 +2353,17 @@
     el.btnShare.disabled = true;
     el.saveInfo.textContent = 'Готовим файл…';
     try {
+      let source = exportCanvas;
+      if (exportFormat === 'jpeg' && hasTransparency(state)) {
+        // В JPG нет прозрачности: подкладываем белый фон
+        source = makeCanvas(exportCanvas.width, exportCanvas.height);
+        const sctx = source.getContext('2d');
+        sctx.fillStyle = '#ffffff';
+        sctx.fillRect(0, 0, source.width, source.height);
+        sctx.drawImage(exportCanvas, 0, 0);
+      }
       const type = exportFormat === 'png' ? 'image/png' : 'image/jpeg';
-      const blob = await canvasToBlob(exportCanvas, type, +el.quality.value / 100);
+      const blob = await canvasToBlob(source, type, +el.quality.value / 100);
       if (job !== blobJob) return;
       exportBlob = blob;
       el.saveInfo.innerHTML =
@@ -1318,7 +2383,7 @@
   }
 
   async function openSaveDialog() {
-    if (!source) return;
+    if (!original || aiBusy) return;
     if (mode === 'crop') applyCrop(false);
     exportCanvas = null;
     exportBlob = null;
@@ -1326,13 +2391,15 @@
     el.btnShare.disabled = true;
     el.saveInfo.textContent = 'Готовим фото…';
     el.btnShare.hidden = !canShareFiles();
+    setFormat(hasTransparency(state) ? 'png' : exportFormat, true);
     if (typeof el.saveDialog.showModal === 'function') el.saveDialog.showModal();
     else el.saveDialog.setAttribute('open', '');
-    await new Promise((r) => setTimeout(r, 30)); // даём окну появиться
+    await new Promise((r) => setTimeout(r, 30));
     try {
       exportCanvas = await renderFullSize();
       await prepareBlob();
     } catch (e) {
+      console.error(e);
       el.saveInfo.textContent = 'Не получилось подготовить фото. Попробуйте ещё раз.';
     }
   }
@@ -1350,14 +2417,20 @@
     }
   }
 
-  function setFormat(format) {
+  function setFormat(format, silent) {
     exportFormat = format;
-    el.format.forEach((b) => b.setAttribute('aria-checked', String(b.dataset.format === format)));
+    setRadio(el.format, 'format', format);
     el.qualityField.hidden = format === 'png';
-    el.formatHint.textContent = format === 'png'
-      ? 'PNG сохраняет фото без потери качества, но файл весит больше.'
-      : 'JPG весит меньше и подходит для соцсетей и мессенджеров.';
-    schedulePrepareBlob();
+    if (hasTransparency(state)) {
+      el.formatHint.textContent = format === 'png'
+        ? 'PNG сохранит прозрачный фон.'
+        : 'В JPG нет прозрачности: прозрачные места станут белыми.';
+    } else {
+      el.formatHint.textContent = format === 'png'
+        ? 'PNG сохраняет фото без потери качества, но файл весит больше.'
+        : 'JPG весит меньше и подходит для соцсетей и мессенджеров.';
+    }
+    if (!silent) schedulePrepareBlob();
   }
 
   function download() {
@@ -1386,6 +2459,16 @@
   }
 
   /* ---------- Подключаем события ---------- */
+
+  function bindRange(input, output, format, onInput, onChange) {
+    const show = () => {
+      output.textContent = format(+input.value);
+      setFill(input);
+    };
+    input.addEventListener('input', () => { show(); onInput(+input.value); });
+    if (onChange) input.addEventListener('change', onChange);
+    show();
+  }
 
   function bindEvents() {
     // Открытие фото
@@ -1440,16 +2523,18 @@
 
     // До и после: показываем оригинал, пока кнопка зажата
     const startCompare = () => {
-      if (!source || comparing) return;
+      if (!original || comparing || aiBusy) return;
       comparing = true;
-      el.compareBadge.hidden = false;
+      el.badge.hidden = false;
+      el.badge.classList.remove('is-busy');
+      el.badge.textContent = 'Исходное фото';
       el.btnCompare.classList.add('is-active');
       requestRender();
     };
     const stopCompare = () => {
       if (!comparing) return;
       comparing = false;
-      el.compareBadge.hidden = true;
+      el.badge.hidden = true;
       el.btnCompare.classList.remove('is-active');
       requestRender();
     };
@@ -1469,7 +2554,7 @@
     // Вкладки
     el.tabs.forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
 
-    // Сила фильтра
+    // Фильтры
     el.strength.addEventListener('input', () => {
       state.strength = +el.strength.value;
       el.strengthValue.textContent = state.strength;
@@ -1479,25 +2564,44 @@
     });
     el.strength.addEventListener('change', commit);
 
-    // Сброс настроек
+    // Настройки
+    el.btnAuto.addEventListener('click', autoEnhance);
     el.btnResetAdjust.addEventListener('click', () => {
-      state.adjust = { ...ZERO_ADJUST };
+      state.adjust = zeroAdjust();
       syncSliders();
       dirtyAdjust = true;
       requestRender();
       commit();
     });
 
-    // Обрезка и поворот
+    // Обрезка, поворот и наклон
     el.btnRotLeft.addEventListener('click', () => applyOrientation('rotLeft'));
     el.btnRotRight.addEventListener('click', () => applyOrientation('rotRight'));
     el.btnFlipH.addEventListener('click', () => applyOrientation('flipH'));
     el.btnFlipV.addEventListener('click', () => applyOrientation('flipV'));
+    bindRange(el.angle, el.angleValue, formatDegrees, (v) => {
+      state.angle = v;
+      dirtyBase = true;
+      requestRender();
+    }, commit);
+    el.angle.addEventListener('dblclick', () => {
+      state.angle = 0;
+      syncCrop();
+      dirtyBase = true;
+      requestRender();
+      commit();
+    });
     el.ratios.forEach((chip) => chip.addEventListener('click', () => setRatio(chip.dataset.ratio)));
     el.btnCropReset.addEventListener('click', () => {
-      pendingCrop = { x: 0, y: 0, w: 1, h: 1 };
+      pendingCrop = { ...FULL };
       cropRatio = 'free';
-      syncRatios();
+      if (state.angle) {
+        state.angle = 0;
+        dirtyBase = true;
+        commit();
+        requestRender();
+      }
+      syncCrop();
       positionCropUI();
     });
     el.btnCropApply.addEventListener('click', () => applyCrop(true));
@@ -1506,29 +2610,101 @@
     el.cropBox.addEventListener('pointerup', onCropPointerUp);
     el.cropBox.addEventListener('pointercancel', onCropPointerUp);
 
+    // ИИ
+    el.aiMode.forEach((b) => b.addEventListener('click', () => {
+      aiTool = b.dataset.ai;
+      brushHover = null;
+      syncAI();
+      updatePaintingCursor();
+      requestRender();
+    }));
+    bindRange(el.eraseSize, el.eraseSizeValue, String, () => requestRender());
+    el.btnEraseClear.addEventListener('click', () => {
+      eraseStrokes = [];
+      requestRender();
+    });
+    el.btnEraseRun.addEventListener('click', runEraser);
+    el.btnBgRun.addEventListener('click', runBackground);
+    el.bgMode.forEach((b) => b.addEventListener('click', () => {
+      state.bg.mode = b.dataset.bg;
+      dirtyBase = true;
+      syncAI();
+      requestRender();
+      commit();
+    }));
+    bindRange(el.bgBlur, el.bgBlurValue, String, (v) => {
+      state.bg.blur = v;
+      dirtyAdjust = true;
+      requestRender();
+    }, commit);
+
     // Надписи
     el.btnAddText.addEventListener('click', addText);
-    el.btnDeleteText.addEventListener('click', deleteSelectedText);
+    el.btnDeleteText.addEventListener('click', deleteSelectedItem);
     el.textInput.addEventListener('input', () => {
-      const t = selectedText();
-      if (!t) return;
+      const t = selectedItem();
+      if (!t || t.kind !== 'text') return;
       t.text = el.textInput.value;
       ensureFont(fontOf(t), t.text);
       requestRender();
     });
     el.textInput.addEventListener('change', commit);
-    el.textSize.addEventListener('input', () => updateText({ size: +el.textSize.value }, false));
+    el.textSize.addEventListener('input', () => updateItem({ size: +el.textSize.value }, false));
     el.textSize.addEventListener('change', commit);
-    el.textStyle.forEach((b) => b.addEventListener('click', () => updateText({ style: b.dataset.style }, true)));
+    el.textRotation.addEventListener('input', () => updateItem({ rotation: +el.textRotation.value }, false));
+    el.textRotation.addEventListener('change', commit);
+    el.textRotation.addEventListener('dblclick', () => updateItem({ rotation: 0 }, true));
+    el.textStyle.forEach((b) => b.addEventListener('click', () => updateItem({ style: b.dataset.style }, true)));
 
+    // Стикеры
+    el.stickerSize.addEventListener('input', () => updateItem({ size: +el.stickerSize.value }, false));
+    el.stickerSize.addEventListener('change', commit);
+    el.stickerRotation.addEventListener('input', () => updateItem({ rotation: +el.stickerRotation.value }, false));
+    el.stickerRotation.addEventListener('change', commit);
+    el.stickerRotation.addEventListener('dblclick', () => updateItem({ rotation: 0 }, true));
+    el.btnDeleteSticker.addEventListener('click', deleteSelectedItem);
+
+    // Рисунок
+    bindRange(el.drawSize, el.drawSizeValue, String, () => requestRender());
+    el.btnDrawClear.addEventListener('click', () => {
+      if (!state.strokes.length) return;
+      state.strokes = [];
+      requestRender();
+      commit();
+    });
+
+    // Рамка
+    el.frameStyle.forEach((b) => b.addEventListener('click', () => {
+      state.frame.style = b.dataset.frame;
+      if (b.dataset.frame === 'polaroid' && state.frame.width < 20) state.frame.width = 30;
+      syncFrame();
+      requestRender();
+      commit();
+    }));
+    bindRange(el.frameWidth, el.frameWidthValue, String, (v) => {
+      state.frame.width = v;
+      requestRender();
+    }, commit);
+    bindRange(el.frameRadius, el.frameRadiusValue, String, (v) => {
+      state.frame.radius = v;
+      requestRender();
+    }, commit);
+
+    // Указатель на фото
     el.canvas.addEventListener('pointerdown', onCanvasPointerDown);
     el.canvas.addEventListener('pointermove', onCanvasPointerMove);
     el.canvas.addEventListener('pointerup', onCanvasPointerUp);
     el.canvas.addEventListener('pointercancel', onCanvasPointerUp);
-    el.canvas.addEventListener('pointerleave', () => el.app.classList.remove('is-over-text'));
+    el.canvas.addEventListener('pointerleave', () => {
+      el.app.classList.remove('is-over-text');
+      if (brushHover && !pointer) {
+        brushHover = null;
+        requestRender();
+      }
+    });
     el.canvas.addEventListener('dblclick', (e) => {
-      const t = hitText(canvasPoint(e));
-      if (!t) return;
+      const t = hitItem(canvasPoint(e));
+      if (!t || t.kind !== 'text') return;
       el.textInput.focus();
       el.textInput.select();
     });
@@ -1546,7 +2722,7 @@
     });
     el.format.forEach((b) => b.addEventListener('click', () => setFormat(b.dataset.format)));
     el.quality.addEventListener('input', () => {
-      el.qualityValue.textContent = el.quality.value + '\u00a0%';
+      el.qualityValue.textContent = el.quality.value + ' %';
       setFill(el.quality);
       schedulePrepareBlob();
     });
@@ -1555,7 +2731,7 @@
 
     // Горячие клавиши
     window.addEventListener('keydown', (e) => {
-      if (!source || el.saveDialog.open) return;
+      if (!original || el.saveDialog.open) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (mod && (key === 'z' || key === 'я') && !isTyping()) {
@@ -1567,17 +2743,17 @@
       } else if (mod && (key === 's' || key === 'ы')) {
         e.preventDefault();
         openSaveDialog();
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTextId && !isTyping()) {
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && !isTyping()) {
         e.preventDefault();
-        deleteSelectedText();
-      } else if (e.key === 'Escape' && selectedTextId && !isTyping()) {
-        selectText(null);
+        deleteSelectedItem();
+      } else if (e.key === 'Escape' && selectedId && !isTyping()) {
+        selectItem(null);
       }
     });
 
     // Предупреждение, если закрыть вкладку с несохранёнными правками
     window.addEventListener('beforeunload', (e) => {
-      if (source && historyIndex > 0) {
+      if (original && historyIndex > 0) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -1595,13 +2771,18 @@
 
   buildFilmstrip();
   buildSliders();
-  buildTextControls();
+  buildItemControls();
   bindEvents();
-  setFill(el.strength);
-  setFill(el.textSize);
-  setFill(el.quality);
-  syncFilters();
+  [el.strength, el.textSize, el.textRotation, el.stickerSize, el.stickerRotation, el.quality].forEach(setFill);
+  syncUI();
 
   // Для проверки и отладки из консоли браузера
-  window.kadr = { loadFile, getState: () => state };
+  window.kadr = {
+    loadFile,
+    getState: () => state,
+    setTab,
+    runEraser,
+    runBackground,
+    get busy() { return aiBusy; },
+  };
 })();

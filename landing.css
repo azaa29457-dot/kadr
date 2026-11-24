@@ -1,0 +1,356 @@
+/* ==========================================================
+   Кадр — главная страница (заставка).
+   Цвета и шрифты берутся из style.css.
+   ========================================================== */
+
+html { scroll-behavior: smooth; }
+html, body.landing { height: auto; }
+
+body.landing {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.container {
+  width: min(1200px, 100% - 48px);
+  margin-inline: auto;
+}
+
+a { color: inherit; }
+
+/* Шапка */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid var(--line);
+  background: rgba(24, 24, 26, .86);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.header-inner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-height: 64px;
+}
+.site-nav {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.site-nav a {
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color .15s, background-color .15s;
+}
+.site-nav a:hover { color: var(--text); background: var(--surface-2); }
+.landing .btn { text-decoration: none; }
+
+/* Первый экран */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 64px;
+  align-items: center;
+  padding: 80px 0 104px;
+}
+.hero h1 {
+  margin: 0 0 22px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(32px, 3.9vw, 52px);
+  line-height: 1.08;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
+.lead {
+  max-width: 44ch;
+  margin: 0 0 32px;
+  color: var(--muted);
+  font-size: clamp(17px, 1.35vw, 19px);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 44ch;
+  margin: 28px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.note .icon { width: 18px; height: 18px; margin-top: 2px; color: var(--accent); }
+
+.hero-visual { position: relative; padding: 18px; }
+.hero-visual .corner { width: 34px; height: 34px; }
+.caption {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+/* Сравнение «до и после» */
+.ba {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: ew-resize;
+  --pos: 50%;
+}
+.ba-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+.ba-after {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  object-fit: cover;
+  clip-path: inset(0 0 0 var(--pos));
+}
+.ba-label {
+  position: absolute;
+  top: 14px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .62);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.ba-label-before { left: 14px; }
+.ba-label-after { right: 14px; }
+.ba-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--pos);
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  outline: none;
+}
+.ba-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  transform: translate(-50%, -50%);
+  transition: transform .15s;
+}
+.ba-knob .icon { width: 22px; height: 22px; stroke-width: 2.2; }
+.ba:hover .ba-knob, .ba.is-dragging .ba-knob { transform: translate(-50%, -50%) scale(1.08); }
+.ba-handle:focus-visible .ba-knob { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--text); }
+
+/* Примеры */
+.section-title {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(28px, 3.2vw, 42px);
+  line-height: 1.12;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+}
+.examples { padding: 24px 0 80px; }
+.examples .section-title { margin-bottom: 40px; }
+
+.example {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 64px;
+  align-items: center;
+  padding: 56px 0;
+  border-top: 1px solid var(--line);
+}
+.example-portrait { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
+.example-portrait .ba,
+.example-portrait .still {
+  width: 100%;
+  max-width: 420px;
+  justify-self: center;
+}
+.example-reverse > :first-child { order: 2; }
+
+.still { margin: 0; }
+.still img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+  transform: rotate(-1.5deg);
+}
+
+.example-text h3 {
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(24px, 2.4vw, 32px);
+  line-height: 1.15;
+}
+.example-text p {
+  max-width: 42ch;
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.6;
+}
+.example-text .where {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.where .icon { width: 18px; height: 18px; color: var(--accent); }
+
+/* Возможности */
+.features-section {
+  padding: 96px 0;
+  background: var(--stage);
+}
+.features {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 40px;
+  margin: 40px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.feature {
+  padding: 26px 0 30px;
+  border-top: 1px solid var(--line);
+}
+.feature .icon { width: 26px; height: 26px; color: var(--accent); }
+.feature h3 {
+  margin: 14px 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.feature p {
+  margin: 0;
+  max-width: 34ch;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+/* Почему Кадр */
+.why { padding: 104px 0 40px; }
+.why-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 40px;
+  margin-top: 40px;
+}
+.why-item .icon { width: 30px; height: 30px; color: var(--accent); }
+.why-item h3 {
+  margin: 16px 0 8px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1.25;
+}
+.why-item p {
+  margin: 0;
+  max-width: 34ch;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+/* Последний призыв */
+.final {
+  padding: 96px 0 112px;
+  text-align: center;
+}
+.final .lead { margin: 0 auto 30px; }
+
+/* Подвал */
+.site-footer {
+  padding: 36px 0 48px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.footer-inner p { max-width: 80ch; margin: 0 0 8px; }
+.footer-inner strong { color: var(--text); font-weight: 600; }
+.footer-inner a { text-underline-offset: 2px; }
+.footer-inner a:hover { color: var(--text); }
+
+/* Планшеты и телефоны */
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+    padding: 48px 0 72px;
+  }
+  .example,
+  .example-portrait {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+    padding: 44px 0;
+  }
+  .example-reverse > :first-child { order: 0; }
+  .features { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
+  .why-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .features-section { padding: 72px 0; }
+  .why { padding: 72px 0 24px; }
+  .final { padding: 72px 0 88px; }
+}
+
+@media (max-width: 600px) {
+  .container { width: calc(100% - 32px); }
+  .site-nav { display: none; }
+  .header-inner { justify-content: space-between; min-height: 58px; }
+  .header-inner .btn { height: 38px; padding: 0 14px; font-size: 14px; }
+  .hero-visual { padding: 12px; }
+  .hero-visual .corner { width: 26px; height: 26px; }
+  .actions .btn { flex: 1 1 auto; }
+  .features { grid-template-columns: minmax(0, 1fr); }
+  .feature {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    column-gap: 14px;
+    padding: 18px 0 20px;
+  }
+  .feature .icon { grid-row: span 2; margin-top: 1px; }
+  .feature h3 { margin: 0 0 4px; }
+  .example-portrait .ba,
+  .example-portrait .still { max-width: 300px; }
+  .ba-knob { width: 40px; height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
